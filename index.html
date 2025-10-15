@@ -78,6 +78,20 @@ const logEl = document.getElementById('log');
 const log = (...a)=>{ const s=a.join(' '); console.log(s); logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; };
 const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
 
+// Configure ORT WASM path explicitly and provide debugging
+const ORT_VERSION = '1.19.2';
+function dumpError(err){
+  try{ log('[DEBUG] err.name:', err?.name); }catch(_){}
+  try{ log('[DEBUG] err.message:', err?.message); }catch(_){}
+  try{ log('[DEBUG] err.stack:', err?.stack); }catch(_){}
+}
+try{
+  if (window.ort && ort.env && ort.env.wasm){
+    ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+    log('[DEBUG] ORT wasmPaths =', ort.env.wasm.wasmPaths);
+  }
+}catch(e){ log('[DEBUG] setting wasmPaths failed:', e?.message||e); }
+
 /* ------- UI ------- */
 const btnStart  = document.getElementById('btnStart');
 const btnStop   = document.getElementById('btnStop');
@@ -146,12 +160,35 @@ async function loadModel(url){
   const bin = await fetchBinary(url);
   const eps = pickEP();
   const opts = { executionProviders: eps, graphOptimizationLevel:'all' };
-  session = await ort.InferenceSession.create(bin, opts);
+  let created=false;
+  try{
+    session = await ort.InferenceSession.create(bin, opts);
+    created=true;
+  }catch(err){
+    log('[ERROR] session create failed with opts=', JSON.stringify(opts));
+    dumpError(err);
+  }
+  if(!created){
+    try{
+      session = await ort.InferenceSession.create(bin, { executionProviders:['wasm'], graphOptimizationLevel:'all' });
+      log('[INFO] session created with wasm-only fallback');
+    }catch(err2){
+      log('[ERROR] session create failed (wasm-only)');
+      dumpError(err2);
+      throw err2;
+    }
+  }
   inputName  = session.inputNames[0];
   outputName = session.outputNames[0];
 
   // detect input
-  const meta = session.inputMetadata[inputName];
+  const meta = session.inputMetadata?.[inputName];
+  if (!meta){
+    log('[ERROR] missing input metadata for inputName =', inputName);
+    log('[DEBUG] inputNames:', JSON.stringify(session.inputNames||[]));
+    log('[DEBUG] outputNames:', JSON.stringify(session.outputNames||[]));
+    throw new Error('Invalid model metadata');
+  }
   detectLayoutAndSize(meta);
   off.width = off.height = S;
 
@@ -383,7 +420,15 @@ async function loop(){
   const input = buildInputTensor();
   const feeds = {}; feeds[inputName] = input;
 
-  const out = await session.run(feeds);
+  let out;
+  try{
+    out = await session.run(feeds);
+  }catch(err){
+    log('[ERROR] session.run failed');
+    dumpError(err);
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
   const outTensor = out[outputName] ?? out[Object.keys(out)[0]];
   const raw = outTensor.data;
   const dims = outTensor.dims || (session.outputMetadata[outputName]?.dimensions) || [];
