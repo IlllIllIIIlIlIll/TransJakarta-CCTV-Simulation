@@ -20,65 +20,15 @@
   .meter{font-weight:700}
   .log{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;background:#0f1216;color:#cfe6ff;border:1px solid #1b2129;padding:8px;border-radius:10px;max-height:34vh;overflow:auto}
 </style>
-<!-- onnxruntime-web -->
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
-</head>
-<body>
-<div class="wrap">
-  <h1>👀 CrowdEase — Live Person Counter</h1>
 
-  <div class="toolbar">
-    <button id="btnStart" class="go">▶️ Start</button>
-    <button id="btnStop"  class="stop">⏹️ Stop</button>
-    <span class="sp"></span>
-
-    <label class="badge">Facing:</label>
-    <select id="selFacing" class="sel">
-      <option value="auto" selected>Auto</option>
-      <option value="user">Front</option>
-      <option value="environment">Back</option>
-    </select>
-
-    <label class="badge">Camera:</label>
-    <select id="selCam" class="sel"></select>
-
-    <label class="badge">Threshold:</label>
-    <input id="numConf" class="num" type="number" min="0" max="1" step="0.01" value="0.35" style="width:88px" />
-  </div>
-
-  <div class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <div class="badge" id="lblCam">idle</div>
-      <div class="meter">People: <span id="lblCount">0</span></div>
-    </div>
-    <!-- Single frame only: canvas renders video + detections -->
-    <canvas id="canvas"></canvas>
-    <!-- Hidden video tag used only as a source -->
-    <video id="video" playsinline muted style="display:none"></video>
-  </div>
-
-  <p class="badge">Model: <span id="lblModelName">YOLOv8n (ONNX)</span> — <span id="lblModel">loading…</span></p>
-  <div class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <div>Console</div><div class="badge">Open DevTools → Console for the same logs.</div>
-    </div>
-    <div id="log" class="log"></div>
-  </div>
-</div>
 
 <script>
-/* ---------------- Model URLs (local first, CDN fallback) ---------------- */
 const MODEL_URLS = [
-  // Put the ~12.8 MB file in your repo at /models/yolov8n.onnx so this works:
   "/models/yolov8n.onnx?v=2",
-  // Public fallback (no auth). Use your repo’s default branch name:
   "https://cdn.jsdelivr.net/gh/IlllIllIIIlIlIll/TransJakarta-CCTV-Simulation@main/models/yolov8n.onnx"
 ];
-
-// Person class in COCO
 const PERSON_CLASS = 0;
 
-/* ---------------- Elements & state ---------------- */
 const logEl = document.getElementById('log');
 const log = (...a)=>{ const s=a.join(' '); console.log(s); logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; };
 
@@ -91,14 +41,13 @@ const lblCam    = document.getElementById('lblCam');
 const lblCount  = document.getElementById('lblCount');
 const lblModel  = document.getElementById('lblModel');
 const lblModelName = document.getElementById('lblModelName');
-
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
 
 let stream = null, running = false, rafId = null;
 let session = null, modelLoaded = false;
 
-/* ---------------- Utilities ---------------- */
+/* ---------------- Model loader ---------------- */
 async function fetchBinary(url){
   log("[INFO] GET", url);
   const r = await fetch(url, {mode:'cors', cache:'no-cache'});
@@ -107,7 +56,6 @@ async function fetchBinary(url){
   if(buf.byteLength < 1024) throw new Error(`Tiny response (${buf.byteLength})`);
   return buf;
 }
-
 async function loadModel(){
   lblModel.textContent = "loading…";
   const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
@@ -121,75 +69,98 @@ async function loadModel(){
       lblModelName.textContent = "YOLOv8n (ONNX)";
       log("[INFO] model ready:", url, `(bytes=${bin.byteLength})`);
       return;
-    }catch(e){
-      log("[WARN] model load failed:", e.message || e);
-    }
+    }catch(e){ log("[WARN] model load failed:", e.message || e); }
   }
   lblModel.textContent = "model failed";
   throw new Error("All model URLs failed to load.");
 }
 
-/* ---------------- Camera helpers ---------------- */
+/* ---------------- Camera utils ---------------- */
+function stopLocalStream(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+}
 async function listCameras(){
   const devs = await navigator.mediaDevices.enumerateDevices();
   const cams = devs.filter(d=>d.kind==='videoinput');
   selCam.innerHTML = "";
   cams.forEach((c,i)=>{
     const o=document.createElement('option');
-    o.value = c.deviceId; o.textContent = c.label || `camera ${i+1}`;
+    o.value=c.deviceId; o.textContent = c.label || `camera ${i+1}`;
     selCam.appendChild(o);
   });
   return cams;
 }
-
-// More forgiving opener: try several constraint strategies to avoid
-// “Could not start video source” across browsers/devices.
-async function tryOpen(constraints){
+async function warmPermissions(){
+  // Ask once with a very permissive constraint to unlock labels.
+  let s=null;
   try{
-    const s = await navigator.mediaDevices.getUserMedia(constraints);
-    return s;
+    s = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
   }catch(e){
-    log("[WARN] getUserMedia failed:", e.name || e);
-    return null;
+    // If user denied, surface it
+    throw e;
+  }finally{
+    if(s) s.getTracks().forEach(t=>t.stop());
   }
+  await listCameras(); // labels now available
+}
+
+// Try in order and return the first stream that works.
+async function openWithStrategies(){
+  const deviceId = selCam.value || null;
+  const facing = selFacing.value; // auto|user|environment
+  const STRATS = [];
+
+  if(deviceId){
+    // exact device first (no width/height to avoid overconstraint)
+    STRATS.push({video:{deviceId:{exact:deviceId}}});
+  }else{
+    if(facing==='auto'){
+      STRATS.push({video:{facingMode:{ideal:'environment'}}});
+      STRATS.push({video:{facingMode:{ideal:'user'}}});
+    }else{
+      STRATS.push({video:{facingMode:{exact:facing}}});
+      STRATS.push({video:{facingMode:{ideal:facing}}});
+    }
+  }
+  // gentle hints (some phones prefer these)
+  STRATS.push({video:{width:{ideal:1280}, height:{ideal:720}}});
+  // final fallback
+  STRATS.push({video:true});
+
+  for(const c of STRATS){
+    try{
+      const s = await navigator.mediaDevices.getUserMedia({...c, audio:false});
+      return s;
+    }catch(e){
+      // Only log NotReadable/Overconstrained; we’ll keep trying
+      log("[WARN] getUserMedia failed:", e.name || e);
+      continue;
+    }
+  }
+  throw new Error("Could not start video source");
 }
 
 async function openCamera(){
-  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-
-  // strategies in order:
-  const deviceId = selCam.value || null;
-  const facing = selFacing.value; // auto | user | environment
-  const strategies = [];
-
-  if(deviceId){
-    strategies.push({video:{deviceId:{exact:deviceId}}});
-  }else{
-    if(facing==='auto'){
-      strategies.push({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}});
-      strategies.push({video:{facingMode:{ideal:'user'},         width:{ideal:1280}, height:{ideal:720}}});
-    }else{
-      strategies.push({video:{facingMode:{exact:facing}, width:{ideal:1280}, height:{ideal:720}}});
-      strategies.push({video:{facingMode:{ideal:facing}, width:{ideal:1280}, height:{ideal:720}}});
-    }
+  stopLocalStream();
+  // If we don't have labels (first run), warm permissions.
+  const needWarm = (selCam.options.length===0);
+  if(needWarm){
+    await warmPermissions().catch(e=>{
+      if(String(e).includes("NotAllowedError")) {
+        throw new Error("Camera permission denied");
+      }
+      throw e;
+    });
   }
-  // final fallbacks
-  strategies.push({video:true});
-
-  for(const c of strategies){
-    const s = await tryOpen({audio:false, ...c});
-    if(s){ stream=s; break; }
-  }
-  if(!stream) throw new Error("Could not start video source");
-
+  // Open with robust strategy set
+  stream = await openWithStrategies();
   video.srcObject = stream;
   await video.play();
-  await new Promise(r=> video.onloadedmetadata ? video.onloadedmetadata=r : setTimeout(r,50));
-
+  await new Promise(r=> video.onloadedmetadata ? (video.onloadedmetadata=r) : setTimeout(r,50));
   lblCam.textContent = `camera @ ${video.videoWidth}×${video.videoHeight}`;
   canvas.width = video.videoWidth; canvas.height = video.videoHeight;
 
-  // refresh camera list with labels after permission
+  // refresh device list with labels after permission
   await listCameras();
 }
 
@@ -198,12 +169,9 @@ function sigmoid(x){return 1/(1+Math.exp(-x))}
 function iou(a,b){const x1=Math.max(a[0],b[0]),y1=Math.max(a[1],b[1]),x2=Math.min(a[2],b[2]),y2=Math.min(a[3],b[3]);const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);const inter=w*h;const A=(a[2]-a[0])*(a[3]-a[1]);const B=(b[2]-b[0])*(b[3]-b[1]);return inter/(A+B-inter+1e-6)}
 function nms(boxes,scores,iouTh=0.45,topK=300){
   const idx = scores.map((s,i)=>[s,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
-  const keep=[];
-  for(const i of idx){
-    const bi=boxes[i]; let ok=true;
+  const keep=[]; for(const i of idx){ const bi=boxes[i]; let ok=true;
     for(const j of keep){ if(iou(bi,boxes[j])>iouTh){ok=false;break;} }
-    if(ok){ keep.push(i); if(keep.length>=topK) break; }
-  }
+    if(ok){ keep.push(i); if(keep.length>=topK) break; } }
   return keep;
 }
 // Assumes YOLOv8n ONNX exported as Nx84 (x,y,w,h + 80 logits)
@@ -211,11 +179,10 @@ function decodeYolo(raw, confTh){
   const STRIDE=84, n = raw.length/STRIDE;
   const boxes=[], scores=[];
   for(let i=0;i<n;i++){
-    const base=i*STRIDE;
-    const x=raw[base], y=raw[base+1], w=raw[base+2], h=raw[base+3];
+    const b=i*STRIDE;
+    const x=raw[b], y=raw[b+1], w=raw[b+2], h=raw[b+3];
     const x1=x-w/2, y1=y-h/2, x2=x+w/2, y2=y+h/2;
-    const clsLogit = raw[base+4+PERSON_CLASS];
-    const p = sigmoid(clsLogit);
+    const p = sigmoid(raw[b+4+PERSON_CLASS]);
     if(p>=confTh){ boxes.push([x1,y1,x2,y2]); scores.push(p); }
   }
   const keep = nms(boxes,scores,0.45,300);
@@ -231,7 +198,6 @@ async function loop(){
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   const img = ctx.getImageData(0,0,canvas.width,canvas.height);
 
-  // NHWC -> NCHW float32 [1,3,H,W] in 0..1
   const W=canvas.width, H=canvas.height, N=W*H;
   const chw = new Float32Array(3*N);
   for(let i=0,j=0;i<N;i++,j+=4){
@@ -242,13 +208,11 @@ async function loop(){
   const out = await session.run({ images: input });
 
   const key = Object.keys(out).find(k => out[k].data instanceof Float32Array);
-  const raw = out[key].data; // Float32Array (N*84)
+  const raw = out[key].data;
   const confTh = Math.max(0, Math.min(1, Number(numConf.value)||0.35));
   const dets = decodeYolo(raw, confTh);
 
-  // Draw boxes and count (on the SAME frame)
-  ctx.lineWidth=2; ctx.strokeStyle="#39f773";
-  ctx.fillStyle="rgba(0,0,0,.35)"; ctx.font="14px ui-monospace";
+  ctx.lineWidth=2; ctx.strokeStyle="#39f773"; ctx.fillStyle="rgba(0,0,0,.35)"; ctx.font="14px ui-monospace";
   dets.forEach(d=>{
     const [x1,y1,x2,y2]=d.box;
     ctx.fillRect(x1,y1,Math.max(0,x2-x1),22);
@@ -268,38 +232,31 @@ async function start(){
   try{
     lblCount.textContent = "0";
     if(!modelLoaded) await loadModel();
-    // “Warm” permission prompt first with the selected facing
     await openCamera();
     running = true; loop();
   }catch(e){
     log("[ERROR] start failed:", e.message || e);
-    if(String(e).includes("NotAllowedError")) log("➜ Grant camera permission and try again.");
-    if(String(e).includes("secure origin")) log("➜ Must be served over https (Vercel is ok).");
+    if(String(e).includes("NotAllowedError")) log("➜ Grant camera permission and click Start again.");
+    if(String(e).includes("NotReadableError")) log("➜ Close any other tab/app using the camera (Meet/Zoom/OBS/another demo) and try again.");
+    if(String(e).includes("secure origin")) log("➜ Must be served over https (Vercel is OK).");
   }
 }
 function stop(){
   running=false;
   if(rafId) cancelAnimationFrame(rafId), rafId=null;
-  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  stopLocalStream();
   lblCam.textContent = "stopped";
 }
 
 btnStart.addEventListener('click', start);
 btnStop .addEventListener('click', stop);
+selFacing.addEventListener('change', async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
+selCam   .addEventListener('change', async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
 
-// Switches
-selFacing.addEventListener('change', async ()=>{
-  if(!stream) return;
-  try{ await openCamera(); }catch(e){ log("[WARN] reopen camera failed:", e.message||e); }
-});
-selCam.addEventListener('change', async ()=>{
-  if(!stream) return;
-  try{ await openCamera(); }catch(e){ log("[WARN] reopen camera failed:", e.message||e); }
-});
-
-// Pre-populate device list (labels fill after permission)
+// Pre-populate (labels fill after warmPermissions)
 navigator.mediaDevices?.enumerateDevices?.().then(()=>listCameras()).catch(()=>{});
 log("[INFO] App ready. Click Start.");
 </script>
+
 </body>
 </html>
