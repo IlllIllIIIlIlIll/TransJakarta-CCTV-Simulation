@@ -42,6 +42,13 @@
     <label class="badge">Camera</label>
     <select id="selCam" class="sel"></select>
 
+    <label class="badge">Res</label>
+    <select id="selRes" class="sel">
+      <option value="640x480" selected>640×480</option>
+      <option value="1280x720">1280×720</option>
+      <option value="1920x1080">1920×1080</option>
+    </select>
+
     <label class="badge">Thresh</label>
     <input id="numConf" class="num" type="number" min="0" max="1" step="0.01" value="0.35" style="width:90px"/>
 
@@ -108,6 +115,7 @@ const lblIn     = document.getElementById('lblIn');
 const lblOut    = document.getElementById('lblOut');
 const canvas    = document.getElementById('canvas');
 const ctx       = canvas.getContext('2d', { willReadFrequently:true });
+const selRes    = document.getElementById('selRes');
 
 /* ------- STATE ------- */
 let stream=null, video=null, rafId=null, running=false;
@@ -246,22 +254,25 @@ function buildConstraintAttempts(){
   const attempts = [];
   const deviceId = selCam.value || null;
   const facing = selFacing.value; // auto|user|environment
+  const res = (selRes.value||'640x480').split('x');
+  const idealW = Number(res[0])||640;
+  const idealH = Number(res[1])||480;
 
   // Prefer explicit device if chosen
   if (deviceId){
-    attempts.push({ video:{ deviceId:{ exact:deviceId }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    attempts.push({ video:{ deviceId:{ exact:deviceId }, width:{ideal:idealW}, height:{ideal:idealH} }, audio:false });
   }
 
   // Facing preferences
   if (facing === 'user' || facing === 'environment'){
-    attempts.push({ video:{ facingMode:{ exact:facing }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
-    attempts.push({ video:{ facingMode:{ ideal:facing }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    attempts.push({ video:{ facingMode:{ exact:facing }, width:{ideal:idealW}, height:{ideal:idealH} }, audio:false });
+    attempts.push({ video:{ facingMode:{ ideal:facing }, width:{ideal:idealW}, height:{ideal:idealH} }, audio:false });
   } else {
-    attempts.push({ video:{ facingMode:{ ideal:'environment' }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    attempts.push({ video:{ facingMode:{ ideal:'environment' }, width:{ideal:idealW}, height:{ideal:idealH} }, audio:false });
   }
 
   // Generic preferences
-  attempts.push({ video:{ width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  attempts.push({ video:{ width:{ideal:idealW}, height:{ideal:idealH} }, audio:false });
   // Last resort
   attempts.push({ video:true, audio:false });
 
@@ -312,7 +323,19 @@ async function openCamera(){
     canvas.width  = video.videoWidth  || 640;
     canvas.height = video.videoHeight || 480;
     lblCam.textContent = `camera @ ${canvas.width}×${canvas.height}`;
-    await listCameras().catch(()=>{});
+    // refresh device list and attempt to auto-select chosen facing if possible
+    try{
+      const cams = await listCameras();
+      const facing = selFacing.value;
+      if ((facing==='user' || facing==='environment') && cams.length>1){
+        // try to pick a label hinting the facing
+        const want = facing==='user' ? /front|user|face|self/i : /back|rear|environment|world/i;
+        const found = cams.find(c=>want.test(c.label||''));
+        if (found && selCam.value!==found.deviceId){
+          selCam.value = found.deviceId;
+        }
+      }
+    }catch(_){ }
   });
 }
 
@@ -548,8 +571,15 @@ btnLoad.addEventListener('click', async ()=>{
     await loadModel(modelUrl);
   }catch(e){ log("[ERROR] load model:", e.message||e); }
 });
-selFacing.addEventListener('change', async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
-selCam   .addEventListener('change',   async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
+selFacing.addEventListener('change', async ()=>{
+  try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} 
+});
+selCam   .addEventListener('change',   async ()=>{
+  try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} 
+});
+selRes   .addEventListener('change',   async ()=>{
+  try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} 
+});
 
 navigator.mediaDevices?.enumerateDevices?.().then(()=>listCameras()).catch(()=>{});
 log("[INFO] App ready. Choose model or click Start.");
