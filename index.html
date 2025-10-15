@@ -356,23 +356,30 @@ async function loop(){
 }
 
 /* ------- LIFECYCLE ------- */
+let starting = false;
 async function start(){
-  try{
-    lblCount.textContent="0";
-    lblCam.textContent="starting…";
-    if(!modelLoaded) await loadModel(modelUrl);
+  if (starting || running) return;
+  starting = true;
+  try {
+    lblCount.textContent = "0";
+    lblCam.textContent = "starting…";
+    if(!modelLoaded) await loadModel(); // your existing loader
     await openCamera();
-    running=true; loop();
-    lblCam.textContent="running";
-  }catch(e){
-    log("[ERROR] start failed:", e.message||e);
-    if(String(e).includes("NotAllowed")) log("➜ Allow camera permission and Start again.");
-    if(String(e).includes("NotReadable")) log("➜ Close other apps/tabs using the camera (Meet/Zoom/OBS/another tab), then Start.");
+    running = true;
+    loop();
+    lblCam.textContent = "running";
+  } catch (e) {
+    log("[ERROR] start failed:", e.message || e);
+    if(String(e).includes("NotAllowed")) log("➜ Allow camera permission then Start again.");
+    if(String(e).includes("NotReadable")) log("➜ Close other apps/tabs using the camera, then Start.");
     if(String(e).includes("secure origin")) log("➜ Must be https (Vercel is https).");
-    lblCam.textContent="error";
-    stopLocalStream();
+    lblCam.textContent = "error";
+    stopTracksOnly(); // not destroy, so we can retry faster
+  } finally {
+    starting = false;
   }
 }
+
 function stop(){
   running=false;
   if(rafId) cancelAnimationFrame(rafId), rafId=null;
