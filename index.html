@@ -383,24 +383,50 @@ function decode(raw, dims, confTh, wantClass){
   }
 
   const xywhOff=0, clsOff = (stride===86?6:(stride===85?5:4)); // supports extra objectness
+  // Heuristic: detect if coords are normalized (0..1) vs pixels (~S)
+  let normalized=false;
+  {
+    const sampleN = Math.min(Ndet, 20);
+    let maxAbs=0;
+    for(let i=0;i<sampleN;i++){
+      const base = rowMajor ? i*stride : i;
+      const get = k => rowMajor ? raw[base+k] : raw[k*Ndet + i];
+      const x = Math.abs(get(0));
+      const y = Math.abs(get(1));
+      const w = Math.abs(get(2));
+      const h = Math.abs(get(3));
+      maxAbs = Math.max(maxAbs, x, y, w, h);
+    }
+    normalized = maxAbs <= 1.5; // values ~0..1
+    if (normalized) log('[DEBUG] decode: treating coords as normalized (0..1)');
+  }
   const boxes=[], scores=[];
   for(let i=0;i<Ndet;i++){
     const base = rowMajor ? i*stride : i;
     const get = k => rowMajor ? raw[base+k] : raw[k*Ndet + i];
 
-    const x = get(0), y=get(1), w=get(2), h=get(3);
+    let x = get(0), y=get(1), w=get(2), h=get(3);
+    if (normalized){ x*=S; y*=S; w*=S; h*=S; }
     const x1=x-w/2, y1=y-h/2, x2=x+w/2, y2=y+h/2;
 
+    // Objectness if present
+    const obj = (clsOff>4) ? sigmoid(get(clsOff-1)) : 1;
     let prob=0;
     if (wantClass === '*'){
       // max over classes
       let best=-1, bestv=-1e9;
-      for(let c=0;c<stride-clsOff;c++){ const v=sigmoid(get(clsOff+c)); if(v>bestv){bestv=v; best=c;} }
+      for(let c=0;c<stride-clsOff;c++){ const v=obj * sigmoid(get(clsOff+c)); if(v>bestv){bestv=v; best=c;} }
       prob=bestv;
     } else {
-      prob = sigmoid(get(clsOff + CLASS_PERSON));
+      prob = obj * sigmoid(get(clsOff + CLASS_PERSON));
     }
-    if (prob>=confTh){ boxes.push([x1,y1,x2,y2]); scores.push(prob); }
+    // Sanity filters to drop degenerate boxes
+    if (prob>=confTh && isFinite(x1) && isFinite(y1) && isFinite(x2) && isFinite(y2)){
+      const bw = x2-x1, bh = y2-y1;
+      if (bw>1 && bh>1 && bw<=S*1.5 && bh<=S*1.5){
+        boxes.push([x1,y1,x2,y2]); scores.push(prob);
+      }
+    }
   }
   const keep = nms(boxes,scores,0.45,300);
   return keep.map(i=>({box:boxes[i], score:scores[i]}));
@@ -433,6 +459,11 @@ async function loop(){
     return;
   }
   const outTensor = out[outputName] ?? out[Object.keys(out)[0]];
+  if (!outTensor){
+    log('[ERROR] output tensor missing. keys=', JSON.stringify(Object.keys(out||{})), 'expected=', outputName);
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
   const raw = outTensor.data;
   const dims = outTensor.dims || (session.outputMetadata[outputName]?.dimensions) || [];
 
