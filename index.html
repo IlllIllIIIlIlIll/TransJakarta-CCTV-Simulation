@@ -1,26 +1,26 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-  <title>CrowdEase — Live Person Counter</title>
-  <style>
-    :root{--bg:#0b0c10;--fg:#eaf0f6;--mut:#99a3ad;--acc:#27c4a0}
-    html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
-    .wrap{max-width:900px;margin:auto;padding:16px}
-    h1{font-size:1.1rem;margin:0 0 12px}
-    .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
-    .sp{flex:1}
-    button{border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
-    .go{background:var(--acc);color:#003}.stop{background:#333;color:var(--fg)}
-    .sel,.num{background:#111;color:var(--fg);border:1px solid #222;border-radius:10px;padding:8px}
-    .badge{font-size:.9rem;color:var(--mut)}
-    .status{display:flex;gap:12px;align-items:center;margin:8px 0 12px}
-    .stat{padding:6px 10px;border-radius:10px;background:#101317;border:1px solid #1b2129}
-    canvas{width:100%;height:auto;border-radius:12px;background:#000}
-    .log{margin-top:10px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;background:#0f1216;color:#cfe6ff;border:1px solid #1b2129;padding:8px;border-radius:10px;max-height:28vh;overflow:auto}
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<title>CrowdEase — Live Person Counter</title>
+<style>
+  :root{--bg:#0b0c10;--fg:#eaf0f6;--mut:#99a3ad;--acc:#27c4a0}
+  html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  .wrap{max-width:900px;margin:auto;padding:16px}
+  h1{font-size:1.1rem;margin:0 0 12px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .sp{flex:1}
+  button{border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+  .go{background:var(--acc);color:#003}.stop{background:#333;color:var(--fg)}
+  .sel,.num{background:#111;color:var(--fg);border:1px solid #222;border-radius:10px;padding:8px}
+  .badge{font-size:.9rem;color:var(--mut)}
+  .status{display:flex;gap:12px;align-items:center;margin:8px 0 12px}
+  .stat{padding:6px 10px;border-radius:10px;background:#101317;border:1px solid #1b2129}
+  canvas{width:100%;height:auto;border-radius:12px;background:#000}
+  .log{margin-top:10px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;background:#0f1216;color:#cfe6ff;border:1px solid #1b2129;padding:8px;border-radius:10px;max-height:28vh;overflow:auto}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -51,285 +51,262 @@
     <div class="stat badge">Model: <span id="lblModel">loading…</span></div>
   </div>
 
-  <!-- Single display canvas: video + boxes rendered here -->
+  <!-- Single canvas: shows video + detections -->
   <canvas id="canvas" width="640" height="480"></canvas>
 
   <div id="log" class="log"></div>
 </div>
 
 <script>
-window.addEventListener('DOMContentLoaded', () => {
-  /* ---------------- Config ---------------- */
-  const MODEL_URLS = [
-    "/models/yolov8n.onnx?v=2",
-    "https://cdn.jsdelivr.net/gh/IlllIllIIIlIlIll/TransJakarta-CCTV-Simulation@main/models/yolov8n.onnx"
-  ];
-  const PERSON_CLASS = 0;
-  const MODEL_SIZE = 640; // 640x640 expected
+/* ------- CONFIG ------- */
+const MODEL_URLS = [
+  "/models/yolov8n.onnx?v=2",
+  "https://cdn.jsdelivr.net/gh/IlllIllIIIlIlIll/TransJakarta-CCTV-Simulation@main/models/yolov8n.onnx"
+];
+const MODEL_SIZE = 640;
+const PERSON_CLASS = 0;
 
-  /* ---------------- UI refs ---------------- */
-  const logEl = document.getElementById('log');
-  const log = (...a)=>{ const s=a.join(' '); console.log(s); logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+/* ------- UI / STATE ------- */
+const logEl = document.getElementById('log');
+const log = (...a)=>{ const s=a.join(' '); console.log(s); logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; };
 
-  const btnStart  = document.getElementById('btnStart');
-  const btnStop   = document.getElementById('btnStop');
-  const selFacing = document.getElementById('selFacing');
-  const selCam    = document.getElementById('selCam');
-  const numConf   = document.getElementById('numConf');
-  const lblCam    = document.getElementById('lblCam');
-  const lblCount  = document.getElementById('lblCount');
-  const lblModel  = document.getElementById('lblModel');
-  const canvas    = document.getElementById('canvas');
-  const ctx       = canvas.getContext('2d', { willReadFrequently: true });
+const btnStart  = document.getElementById('btnStart');
+const btnStop   = document.getElementById('btnStop');
+const selFacing = document.getElementById('selFacing');
+const selCam    = document.getElementById('selCam');
+const numConf   = document.getElementById('numConf');
+const lblCam    = document.getElementById('lblCam');
+const lblCount  = document.getElementById('lblCount');
+const lblModel  = document.getElementById('lblModel');
+const canvas    = document.getElementById('canvas');
+const ctx       = canvas.getContext('2d', { willReadFrequently:true });
 
-  /* Offscreen model input canvas: exactly 640x640 with letterbox */
-  const modelCanvas = document.createElement('canvas');
-  modelCanvas.width = MODEL_SIZE; modelCanvas.height = MODEL_SIZE;
-  const modelCtx = modelCanvas.getContext('2d', { willReadFrequently: true });
+const modelCanvas = document.createElement('canvas');
+modelCanvas.width = MODEL_SIZE; modelCanvas.height = MODEL_SIZE;
+const modelCtx = modelCanvas.getContext('2d', { willReadFrequently:true });
 
-  /* ---------------- State ---------------- */
-  let session = null, modelLoaded = false, inputName = 'images', outputName = null;
-  let stream = null, video = null, rafId = null, running = false;
+let session=null, modelLoaded=false, inputName='images', outputName=null;
+let stream=null, video=null, rafId=null, running=false;
 
-  /* ---------------- Model ---------------- */
-  async function fetchBinary(url){
-    log("[INFO] GET", url);
-    const r = await fetch(url, { mode:'cors', cache:'no-cache' });
-    if(!r.ok) throw new Error(`HTTP ${r.status}`);
-    const buf = await r.arrayBuffer();
-    if(buf.byteLength < 1024) throw new Error(`Tiny response (${buf.byteLength})`);
-    return buf;
-  }
-  async function loadModel(){
-    lblModel.textContent = "loading…";
-    const opts = { executionProviders:['wasm'], graphOptimizationLevel:'all' };
-    for(const url of MODEL_URLS){
-      try{
-        log("[INFO] loading ONNX model…", url);
-        const bin = await fetchBinary(url);
-        session = await ort.InferenceSession.create(bin, opts);
-        // Detect real I/O names
-        inputName = session.inputNames?.[0] || 'images';
-        outputName = session.outputNames?.[0] || null;
-        modelLoaded = true;
-        lblModel.textContent = "YOLOv8n — ready";
-        log("[INFO] model ready:", url, `(bytes=${bin.byteLength})`, "input:", inputName, "output:", outputName||"(auto)");
-        return;
-      }catch(e){ log("[WARN] model load failed:", e.message || e); }
-    }
-    lblModel.textContent = "model failed";
-    throw new Error("All model URLs failed to load.");
-  }
-
-  /* ---------------- Camera ---------------- */
-  function stopLocalStream(){
-    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
-    if(video){ video.srcObject = null; video.remove(); video = null; }
-  }
-  async function listCameras(){
-    const devs = await navigator.mediaDevices.enumerateDevices();
-    const cams = devs.filter(d=>d.kind==='videoinput');
-    selCam.innerHTML = "";
-    cams.forEach((c,i)=>{
-      const o=document.createElement('option');
-      o.value=c.deviceId; o.textContent=c.label||`camera ${i+1}`;
-      selCam.appendChild(o);
-    });
-    return cams;
-  }
-  async function warmPermissions(){
-    let s=null; try{ s=await navigator.mediaDevices.getUserMedia({ video:true, audio:false }); }
-    finally{ if(s) s.getTracks().forEach(t=>t.stop()); }
-    await listCameras();
-  }
-  async function openWithStrategies(){
-    const deviceId = selCam.value || null;
-    const facing = selFacing.value; // auto|user|environment
-    const STRATS = [];
-
-    if(deviceId){
-      STRATS.push({ video:{ deviceId:{ exact:deviceId } } });
-    }else{
-      if(facing==='auto'){
-        STRATS.push({ video:{ facingMode:{ ideal:'environment' } } });
-        STRATS.push({ video:{ facingMode:{ ideal:'user' } } });
-      }else{
-        STRATS.push({ video:{ facingMode:{ exact:facing } } });
-        STRATS.push({ video:{ facingMode:{ ideal:facing } } });
-      }
-    }
-    STRATS.push({ video:{ width:{ ideal:1280 }, height:{ ideal:720 } } });
-    STRATS.push({ video:true });
-
-    for(const c of STRATS){
-      try{
-        const s = await navigator.mediaDevices.getUserMedia({ ...c, audio:false });
-        return s;
-      }catch(e){ log("[WARN] getUserMedia failed:", e.name || e); }
-    }
-    throw new Error("Could not start video source");
-  }
-  async function openCamera(){
-    stopLocalStream();
-
-    // Display video size = native camera size
-    video = document.createElement('video');
-    video.playsInline = true; video.muted = true; video.autoplay = false;
-
-    if(selCam.options.length === 0){
-      await warmPermissions().catch(e=>{
-        if(String(e).includes("NotAllowed")) throw new Error("Camera permission denied");
-        throw e;
-      });
-    }
-
-    stream = await openWithStrategies();
-    video.srcObject = stream;
-    await video.play();
-    await new Promise(r => video.onloadedmetadata ? video.onloadedmetadata = r : setTimeout(r,50));
-
-    canvas.width  = video.videoWidth  || 640;
-    canvas.height = video.videoHeight || 480;
-    lblCam.textContent = `camera @ ${canvas.width}×${canvas.height}`;
-
-    // refresh device list (labels now visible)
-    await listCameras();
-  }
-
-  /* ---------------- Letterbox ---------------- */
-  function letterboxTo640(){
-    const srcW = video.videoWidth, srcH = video.videoHeight;
-    const scale = Math.min(MODEL_SIZE/srcW, MODEL_SIZE/srcH);
-    const newW = Math.round(srcW * scale);
-    const newH = Math.round(srcH * scale);
-    const padX = Math.floor((MODEL_SIZE - newW)/2);
-    const padY = Math.floor((MODEL_SIZE - newH)/2);
-
-    // Draw into 640x640 with padding
-    modelCtx.fillStyle = "#000";
-    modelCtx.fillRect(0,0,MODEL_SIZE,MODEL_SIZE);
-    modelCtx.drawImage(video, 0,0,srcW,srcH, padX,padY,newW,newH);
-
-    return { scale, padX, padY, srcW, srcH };
-  }
-
-  /* ---------------- YOLO decode (person-only) ---------------- */
-  function sigmoid(x){return 1/(1+Math.exp(-x))}
-  function iou(a,b){const x1=Math.max(a[0],b[0]),y1=Math.max(a[1],b[1]),x2=Math.min(a[2],b[2]),y2=Math.min(a[3],b[3]);const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);const inter=w*h;const A=(a[2]-a[0])*(a[3]-a[1]);const B=(b[2]-b[0])*(b[3]-b[1]);return inter/(A+B-inter+1e-6)}
-  function nms(boxes,scores,iouTh=0.45,topK=300){
-    const idx = scores.map((s,i)=>[s,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
-    const keep=[]; for(const i of idx){ const bi=boxes[i]; let ok=true;
-      for(const j of keep){ if(iou(bi,boxes[j])>iouTh){ok=false;break;} }
-      if(ok){ keep.push(i); if(keep.length>=topK) break; } }
-    return keep;
-  }
-  // Assumes YOLOv8n export Nx84: [x,y,w,h, 80 class logits]
-  function decodeYolo(raw, confTh){
-    const STRIDE=84, n = raw.length/STRIDE;
-    const boxes=[], scores=[];
-    for(let i=0;i<n;i++){
-      const b=i*STRIDE;
-      const x=raw[b], y=raw[b+1], w=raw[b+2], h=raw[b+3];
-      const x1=x-w/2, y1=y-h/2, x2=x+w/2, y2=y+h/2;
-      const p = sigmoid(raw[b+4+PERSON_CLASS]);
-      if(p>=confTh){ boxes.push([x1,y1,x2,y2]); scores.push(p); }
-    }
-    const keep = nms(boxes,scores,0.45,300);
-    return keep.map(i=>({box:boxes[i], score:scores[i]}));
-  }
-
-  /* ---------------- Loop ---------------- */
-  async function loop(){
-    if(!running) return;
-    const t0 = performance.now();
-
-    // 1) Draw camera to display canvas (native size)
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    // 2) Prepare model input (letterboxed 640×640)
-    const prep = letterboxTo640(); // {scale, padX, padY, srcW, srcH}
-    const img = modelCtx.getImageData(0,0,MODEL_SIZE,MODEL_SIZE);
-    const N = MODEL_SIZE * MODEL_SIZE;
-    const chw = new Float32Array(3*N);
-    // NHWC (RGBA) -> NCHW (RGB), normalized
-    for(let i=0,j=0;i<N;i++,j+=4){
-      const r=img.data[j]/255, g=img.data[j+1]/255, b=img.data[j+2]/255;
-      chw[i]=r; chw[i+N]=g; chw[i+2*N]=b;
-    }
-    const input = new ort.Tensor('float32', chw, [1,3,MODEL_SIZE,MODEL_SIZE]);
-
-    // 3) Run ONNX
-    const feeds = {}; feeds[inputName] = input;
-    const out = await session.run(feeds);
-    const outTensor = outputName ? out[outputName] : out[Object.keys(out)[0]];
-    const raw = outTensor.data; // Float32Array
-
-    // 4) Decode + map boxes back to original video coordinates
-    const confTh = Math.max(0, Math.min(1, Number(numConf.value)||0.35));
-    const dets = decodeYolo(raw, confTh).map(d=>{
-      let [x1,y1,x2,y2] = d.box; // model space (640x640)
-      // remove padding & unscale
-      x1 = (x1 - prep.padX) / prep.scale;
-      y1 = (y1 - prep.padY) / prep.scale;
-      x2 = (x2 - prep.padX) / prep.scale;
-      y2 = (y2 - prep.padY) / prep.scale;
-      // clip to video bounds
-      x1 = Math.max(0, Math.min(prep.srcW, x1));
-      y1 = Math.max(0, Math.min(prep.srcH, y1));
-      x2 = Math.max(0, Math.min(prep.srcW, x2));
-      y2 = Math.max(0, Math.min(prep.srcH, y2));
-      return { box:[x1,y1,x2,y2], score:d.score };
-    });
-
-    // 5) Draw boxes on SAME display canvas (1:1 with video)
-    ctx.lineWidth=2; ctx.strokeStyle="#39f773"; ctx.fillStyle="rgba(0,0,0,.35)"; ctx.font="14px ui-monospace";
-    dets.forEach(d=>{
-      const [x1,y1,x2,y2]=d.box;
-      const w=Math.max(0,x2-x1), h=Math.max(0,y2-y1);
-      ctx.fillRect(x1,y1, w, 22);
-      ctx.strokeRect(x1,y1, w, h);
-      ctx.fillStyle="#fff"; ctx.fillText(d.score.toFixed(2), x1+6, y1+16);
-      ctx.fillStyle="rgba(0,0,0,.35)";
-    });
-    lblCount.textContent = String(dets.length);
-
-    const t1 = performance.now();
-    if(((t1-t0)|0)>50) log(`[INFO] frame ${(t1-t0).toFixed(1)} ms`);
-    rafId = requestAnimationFrame(loop);
-  }
-
-  /* ---------------- Lifecycle ---------------- */
-  async function start(){
-    try{
-      lblCount.textContent = "0";
-      if(!modelLoaded) await loadModel();
-      await openCamera();
-      running = true; loop();
-    }catch(e){
-      log("[ERROR] start failed:", e.message || e);
-      if(String(e).includes("NotAllowed")) log("➜ Grant camera permission and click Start again.");
-      if(String(e).includes("NotReadable")) log("➜ Close other apps/tabs using the camera (Meet/Zoom/OBS), then Start.");
-      if(String(e).includes("secure origin")) log("➜ Must be https (Vercel is https).");
-      lblCam.textContent = "error";
-    }
-  }
-  function stop(){
-    running = false;
-    if(rafId) cancelAnimationFrame(rafId), rafId=null;
-    stopLocalStream();
-    lblCam.textContent = "stopped";
-  }
-
-  btnStart.addEventListener('click', start);
-  btnStop .addEventListener('click', stop);
-  selFacing.addEventListener('change', async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
-  selCam   .addEventListener('change',   async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
-
-  // Pre-populate dropdown (labels fill after permission)
-  navigator.mediaDevices?.enumerateDevices?.().then(()=>listCameras()).catch(()=>{});
+/* ------- MODEL ------- */
+async function fetchBinary(url){
+  log("[INFO] GET", url);
+  const r = await fetch(url, { mode:'cors', cache:'no-cache' });
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  const buf = await r.arrayBuffer();
+  if(buf.byteLength < 1024) throw new Error(`Tiny response (${buf.byteLength})`);
+  return buf;
+}
+async function loadModel(){
   lblModel.textContent = "loading…";
-  log("[INFO] App ready. Click Start.");
-});
+  const opts = { executionProviders:['wasm'], graphOptimizationLevel:'all' };
+  for(const url of MODEL_URLS){
+    try{
+      log("[INFO] loading ONNX model…", url);
+      const bin = await fetchBinary(url);
+      session = await ort.InferenceSession.create(bin, opts);
+      inputName  = session.inputNames?.[0]  || 'images';
+      outputName = session.outputNames?.[0] || null;
+      modelLoaded = true;
+      lblModel.textContent = "YOLOv8n — ready";
+      log("[INFO] model ready:", url, `(bytes=${bin.byteLength}) input: ${inputName} output: ${outputName||'(auto)'}`);
+      return;
+    }catch(e){ log("[WARN] model load failed:", e.message||e); }
+  }
+  lblModel.textContent = "model failed";
+  throw new Error("All model URLs failed to load.");
+}
+
+/* ------- CAMERA ------- */
+function stopLocalStream(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  if(video){ video.srcObject=null; video.remove(); video=null; }
+}
+async function listCameras(){
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const cams = devs.filter(d=>d.kind==='videoinput');
+  selCam.innerHTML = "";
+  cams.forEach((c,i)=>{
+    const o=document.createElement('option');
+    o.value=c.deviceId; o.textContent=c.label||`camera ${i+1}`;
+    selCam.appendChild(o);
+  });
+  return cams;
+}
+async function openCameraOnce(){
+  // create <video> lazily
+  video = document.createElement('video');
+  video.setAttribute('playsinline',''); video.muted=true;
+
+  const deviceId = selCam.value || null;
+  const facing = selFacing.value; // auto|user|environment
+
+  // Single attempt first, then a couple of clean retries:
+  const attempts = [];
+  if(deviceId){
+    attempts.push({ video:{ deviceId:{ exact:deviceId } } });
+  }else{
+    if(facing==='auto'){
+      attempts.push({ video:{ facingMode:{ ideal:'environment' } } });
+    }else{
+      attempts.push({ video:{ facingMode:{ exact:facing } } });
+    }
+  }
+  attempts.push({ video:{ width:{ideal:1280}, height:{ideal:720} } });
+  attempts.push({ video:true });
+
+  let lastErr=null;
+  for(const c of attempts){
+    try{
+      // ensure no previous tracks survive across attempts
+      stopLocalStream();
+      const s = await navigator.mediaDevices.getUserMedia({ ...c, audio:false });
+      stream = s;
+      video.srcObject = stream;
+      await video.play();
+      await new Promise(r => video.onloadedmetadata ? video.onloadedmetadata = r : setTimeout(r,50));
+      return; // success
+    }catch(e){
+      lastErr = e;
+      log("[WARN] getUserMedia failed:", e.name||e);
+      // brief delay between retries helps some Android devices
+      await new Promise(r=>setTimeout(r,150));
+    }
+  }
+  throw lastErr || new Error("Could not start video source");
+}
+async function openCamera(){
+  await openCameraOnce();
+  canvas.width  = video.videoWidth  || 640;
+  canvas.height = video.videoHeight || 480;
+  lblCam.textContent = `camera @ ${canvas.width}×${canvas.height}`;
+  // labels appear after first permission
+  await listCameras().catch(()=>{});
+}
+
+/* ------- LETTERBOX ------- */
+function letterboxTo640(){
+  const srcW = video.videoWidth, srcH = video.videoHeight;
+  const scale = Math.min(MODEL_SIZE/srcW, MODEL_SIZE/srcH);
+  const newW = Math.round(srcW*scale), newH = Math.round(srcH*scale);
+  const padX = Math.floor((MODEL_SIZE-newW)/2);
+  const padY = Math.floor((MODEL_SIZE-newH)/2);
+
+  modelCtx.fillStyle="#000"; modelCtx.fillRect(0,0,MODEL_SIZE,MODEL_SIZE);
+  modelCtx.drawImage(video,0,0,srcW,srcH, padX,padY,newW,newH);
+  return { scale, padX, padY, srcW, srcH };
+}
+
+/* ------- YOLO DECODE ------- */
+function sigmoid(x){return 1/(1+Math.exp(-x))}
+function iou(a,b){const x1=Math.max(a[0],b[0]),y1=Math.max(a[1],b[1]),x2=Math.min(a[2],b[2]),y2=Math.min(a[3],b[3]);const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);const inter=w*h;const A=(a[2]-a[0])*(a[3]-a[1]);const B=(b[2]-b[0])*(b[3]-b[1]);return inter/(A+B-inter+1e-6)}
+function nms(boxes,scores,iouTh=0.45,topK=300){
+  const idx = scores.map((s,i)=>[s,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
+  const keep=[]; for(const i of idx){ const bi=boxes[i]; let ok=true;
+    for(const j of keep){ if(iou(bi,boxes[j])>iouTh){ok=false;break;} }
+    if(ok){ keep.push(i); if(keep.length>=topK) break; } }
+  return keep;
+}
+// YOLOv8 export: Nx84 (x,y,w,h + 80 class logits). Person class=0 (offset 4).
+function decodeYolo(raw, confTh){
+  const STRIDE=84, n=raw.length/STRIDE;
+  const boxes=[], scores=[];
+  for(let i=0;i<n;i++){
+    const b=i*STRIDE;
+    const x=raw[b], y=raw[b+1], w=raw[b+2], h=raw[b+3];
+    const x1=x-w/2, y1=y-h/2, x2=x+w/2, y2=y+h/2;
+    const p=sigmoid(raw[b+4+PERSON_CLASS]);
+    if(p>=confTh){ boxes.push([x1,y1,x2,y2]); scores.push(p); }
+  }
+  const keep=nms(boxes,scores,0.45,300);
+  return keep.map(i=>({box:boxes[i], score:scores[i]}));
+}
+
+/* ------- LOOP ------- */
+async function loop(){
+  if(!running) return;
+  const t0 = performance.now();
+
+  // draw camera to display canvas
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  // prepare 640×640 input
+  const prep = letterboxTo640();
+  const img = modelCtx.getImageData(0,0,MODEL_SIZE,MODEL_SIZE);
+  const N = MODEL_SIZE*MODEL_SIZE;
+  const chw = new Float32Array(3*N);
+  for(let i=0,j=0;i<N;i++,j+=4){
+    const r=img.data[j]/255, g=img.data[j+1]/255, b=img.data[j+2]/255;
+    chw[i]=r; chw[i+N]=g; chw[i+2*N]=b;
+  }
+  const input = new ort.Tensor('float32', chw, [1,3,MODEL_SIZE,MODEL_SIZE]);
+  const feeds = {}; feeds[inputName]=input;
+
+  const out = await session.run(feeds);
+  const outTensor = outputName ? out[outputName] : out[Object.keys(out)[0]];
+  const raw = outTensor.data;
+
+  // decode and map back to video coordinates
+  const confTh = Math.max(0, Math.min(1, Number(numConf.value)||0.35));
+  const dets = decodeYolo(raw, confTh).map(d=>{
+    let [x1,y1,x2,y2] = d.box;
+    x1=(x1-prep.padX)/prep.scale; y1=(y1-prep.padY)/prep.scale;
+    x2=(x2-prep.padX)/prep.scale; y2=(y2-prep.padY)/prep.scale;
+    x1=Math.max(0,Math.min(prep.srcW,x1)); y1=Math.max(0,Math.min(prep.srcH,y1));
+    x2=Math.max(0,Math.min(prep.srcW,x2)); y2=Math.max(0,Math.min(prep.srcH,y2));
+    return { box:[x1,y1,x2,y2], score:d.score };
+  });
+
+  // draw boxes
+  ctx.lineWidth=2; ctx.strokeStyle="#39f773"; ctx.fillStyle="rgba(0,0,0,.35)"; ctx.font="14px ui-monospace";
+  dets.forEach(d=>{
+    const [x1,y1,x2,y2]=d.box; const w=x2-x1, h=y2-y1;
+    ctx.fillRect(x1,y1, w, 22);
+    ctx.strokeRect(x1,y1, w, h);
+    ctx.fillStyle="#fff"; ctx.fillText(d.score.toFixed(2), x1+6, y1+16);
+    ctx.fillStyle="rgba(0,0,0,.35)";
+  });
+  lblCount.textContent = String(dets.length);
+
+  const t1 = performance.now();
+  if(((t1-t0)|0)>50) log(`[INFO] frame ${(t1-t0).toFixed(1)} ms`);
+  rafId = requestAnimationFrame(loop);
+}
+
+/* ------- LIFECYCLE ------- */
+async function start(){
+  try{
+    lblCount.textContent="0";
+    lblCam.textContent="starting…";
+    if(!modelLoaded) await loadModel();
+    await openCamera();
+    running=true; loop();
+    lblCam.textContent="running";
+  }catch(e){
+    log("[ERROR] start failed:", e.message||e);
+    if(String(e).includes("NotAllowed")) log("➜ Grant camera permission and click Start again.");
+    if(String(e).includes("NotReadable")) log("➜ Close other apps/tabs using the camera (Meet/Zoom/OBS/other deploy), then Start.");
+    if(String(e).includes("secure origin")) log("➜ Must be https (Vercel is https).");
+    lblCam.textContent="error";
+    stopLocalStream();
+  }
+}
+function stop(){
+  running=false;
+  if(rafId) cancelAnimationFrame(rafId), rafId=null;
+  stopLocalStream();
+  lblCam.textContent="stopped";
+}
+
+btnStart.addEventListener('click', start);
+btnStop .addEventListener('click', stop);
+selFacing.addEventListener('change', async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
+selCam   .addEventListener('change',   async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
+
+// populate device list (labels appear after first permission)
+navigator.mediaDevices?.enumerateDevices?.().then(()=>listCameras()).catch(()=>{});
+lblModel.textContent="loading…";
+log("[INFO] App ready. Click Start.");
 </script>
 </body>
 </html>
