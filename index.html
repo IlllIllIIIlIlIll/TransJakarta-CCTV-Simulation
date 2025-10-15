@@ -182,15 +182,18 @@ async function loadModel(url){
   outputName = session.outputNames[0];
 
   // detect input
+  log('[DEBUG] inputNames:', JSON.stringify(session.inputNames||[]));
+  log('[DEBUG] outputNames:', JSON.stringify(session.outputNames||[]));
+  try{ log('[DEBUG] inputMetadata keys:', JSON.stringify(Object.keys(session.inputMetadata||{}))); }catch(_){}
   const meta = session.inputMetadata?.[inputName];
-  if (!meta){
-    log('[ERROR] missing input metadata for inputName =', inputName);
-    log('[DEBUG] inputNames:', JSON.stringify(session.inputNames||[]));
-    log('[DEBUG] outputNames:', JSON.stringify(session.outputNames||[]));
-    throw new Error('Invalid model metadata');
+  if (!meta || !meta.dimensions){
+    log('[WARN] input metadata missing; using defaults NCHW 1x3x640x640');
+    inputLayout='NCHW'; C=3; S=640;
+  } else {
+    detectLayoutAndSize(meta);
   }
-  detectLayoutAndSize(meta);
   off.width = off.height = S;
+  log('[DEBUG] resolved input layout:', inputLayout, 'S=', S, 'C=', C);
 
   modelLoaded = true;
   modelUrl = url; // persist resolved URL
