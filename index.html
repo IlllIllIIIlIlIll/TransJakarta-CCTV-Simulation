@@ -200,7 +200,10 @@ async function loadModel(url){
   lblModel.textContent = url.split('/').pop();
   lblEP.textContent = eps[0];
   lblIn.textContent = `${inputLayout} ${S}×${S}×${C}`;
-  lblOut.textContent = (session.outputMetadata[outputName]?.dimensions||[]).join('×') || '-';
+  try{
+    const odims = session.outputMetadata?.[outputName]?.dimensions;
+    lblOut.textContent = (odims||[]).join('×') || '-';
+  }catch(_){ lblOut.textContent='-'; }
   log("[INFO] model ready:", url, `EP=${eps[0]}`, `input=${lblIn.textContent}`, `output=${lblOut.textContent}`);
 }
 
@@ -458,11 +461,16 @@ async function loop(){
     rafId = requestAnimationFrame(loop);
     return;
   }
-  const outTensor = out[outputName] ?? out[Object.keys(out)[0]];
+  let outTensor = out[outputName];
   if (!outTensor){
-    log('[ERROR] output tensor missing. keys=', JSON.stringify(Object.keys(out||{})), 'expected=', outputName);
-    rafId = requestAnimationFrame(loop);
-    return;
+    const keys = Object.keys(out||{});
+    if (keys.length===0){
+      log('[ERROR] empty outputs from session.run');
+      rafId = requestAnimationFrame(loop);
+      return;
+    }
+    outTensor = out[keys[0]];
+    log('[WARN] using first output tensor:', keys[0]);
   }
   const raw = outTensor.data;
   const dims = outTensor.dims || (session.outputMetadata[outputName]?.dimensions) || [];
@@ -477,17 +485,22 @@ async function loop(){
     x2=clamp(x2,0,prep.srcW); y2=clamp(y2,0,prep.srcH);
     return { box:[x1,y1,x2,y2], score:d.score };
   });
+  // Final sanity clamp + drop near-zero boxes after unletterbox
+  const filtered = dets.filter(d=>{
+    const [x1,y1,x2,y2] = d.box; const w=x2-x1, h=y2-y1;
+    return w>4 && h>4 && isFinite(w) && isFinite(h);
+  });
 
   // draw boxes
   ctx.lineWidth=2; ctx.strokeStyle="#39f773"; ctx.fillStyle="rgba(0,0,0,.35)"; ctx.font="14px ui-monospace";
-  dets.forEach(d=>{
+  filtered.forEach(d=>{
     const [x1,y1,x2,y2]=d.box; const w=x2-x1, h=y2-y1;
     ctx.fillRect(x1,y1, w, 22);
     ctx.strokeRect(x1,y1, w, h);
     ctx.fillStyle="#fff"; ctx.fillText(d.score.toFixed(2), x1+6, y1+16);
     ctx.fillStyle="rgba(0,0,0,.35)";
   });
-  lblCount.textContent = String(dets.length);
+  lblCount.textContent = String(filtered.length);
 
   const dt = performance.now() - t0;
   if ((dt|0)>50) log(`[INFO] frame ${dt.toFixed(1)} ms`);
