@@ -162,9 +162,64 @@ async function loadModel(url){
 }
 
 /* ------- CAMERA ------- */
+// persistent hidden video element to avoid null races during retries/switches
+video = document.createElement('video');
+video.setAttribute('playsinline','');
+video.muted = true;
+
+// serialize all camera start/stop/open operations to prevent races
+let camLock = Promise.resolve();
+let openSeq = 0; // invalidate stale opens
+function withCamLock(cb){
+  const run = camLock.then(()=>cb());
+  // ensure the chain continues even if this run throws
+  camLock = run.catch(()=>{});
+  return run;
+}
+
 function stopLocalStream(){
-  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-  if(video){ video.srcObject=null; video.remove(); video=null; }
+  if(stream){
+    try { stream.getTracks().forEach(t=>t.stop()); } catch(_){}
+    stream=null;
+  }
+  if(video){
+    try { video.srcObject=null; } catch(_){}
+  }
+}
+
+async function waitForVideoReady(timeoutMs=2500){
+  const t0 = performance.now();
+  while (performance.now()-t0 < timeoutMs){
+    if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) return;
+    await new Promise(r=>setTimeout(r,50));
+  }
+  if (!video || video.videoWidth===0) throw new Error('Video dimensions unavailable');
+}
+
+function buildConstraintAttempts(){
+  const attempts = [];
+  const deviceId = selCam.value || null;
+  const facing = selFacing.value; // auto|user|environment
+
+  // Prefer explicit device if chosen
+  if (deviceId){
+    attempts.push({ video:{ deviceId:{ exact:deviceId }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  }
+
+  // Facing preferences
+  if (facing === 'user' || facing === 'environment'){
+    attempts.push({ video:{ facingMode:{ exact:facing }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    attempts.push({ video:{ facingMode:{ ideal:facing }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  } else {
+    attempts.push({ video:{ facingMode:{ ideal:'environment' }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  }
+
+  // Generic preferences
+  attempts.push({ video:{ width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  // Last resort
+  attempts.push({ video:true, audio:false });
+
+  return attempts;
 }
 async function listCameras(){
   const devs = await navigator.mediaDevices.enumerateDevices();
@@ -178,45 +233,41 @@ async function listCameras(){
   return cams;
 }
 async function openCameraOnce(){
-  video = document.createElement('video');
-  video.setAttribute('playsinline',''); video.muted=true;
+  const seq = ++openSeq;
+  // ensure previous tracks are fully stopped before opening a new one
+  stopLocalStream();
 
-  const deviceId = selCam.value || null;
-  const facing = selFacing.value; // auto|user|environment
-
-  const attempts = [];
-  if(deviceId) attempts.push({ video:{ deviceId:{ exact:deviceId } }, audio:false });
-  else {
-    if(facing==='auto') attempts.push({ video:{ facingMode:{ ideal:'environment' } }, audio:false });
-    else attempts.push({ video:{ facingMode:{ exact:facing } }, audio:false });
-  }
-  attempts.push({ video:{ width:{ideal:1280}, height:{ideal:720} }, audio:false });
-  attempts.push({ video:true, audio:false });
-
+  const attempts = buildConstraintAttempts();
   let lastErr=null;
   for(const c of attempts){
     try{
-      stopLocalStream();
       const s = await navigator.mediaDevices.getUserMedia(c);
+      if (seq !== openSeq){ // stale open due to a newer request
+        try { s.getTracks().forEach(t=>t.stop()); } catch(_){}
+        throw new Error('stale-open');
+      }
       stream = s;
       video.srcObject = stream;
       await video.play();
-      await new Promise(r => video.onloadedmetadata ? video.onloadedmetadata = r : setTimeout(r,50));
+      await waitForVideoReady(2500);
       return;
     }catch(e){
       lastErr = e;
       log("[WARN] getUserMedia failed:", e.name||e.message||e);
+      // Give hardware a brief breather between attempts
       await new Promise(r=>setTimeout(r,150));
     }
   }
   throw lastErr || new Error("Could not start video source");
 }
 async function openCamera(){
-  await openCameraOnce();
-  canvas.width  = video.videoWidth  || 640;
-  canvas.height = video.videoHeight || 480;
-  lblCam.textContent = `camera @ ${canvas.width}×${canvas.height}`;
-  await listCameras().catch(()=>{});
+  await withCamLock(async ()=>{
+    await openCameraOnce();
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    lblCam.textContent = `camera @ ${canvas.width}×${canvas.height}`;
+    await listCameras().catch(()=>{});
+  });
 }
 
 /* ------- PREP ------- */
@@ -317,6 +368,12 @@ async function loop(){
   if(!running) return;
   const t0 = performance.now();
 
+  // skip frame if video not ready to avoid width=0 races
+  if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0){
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
+
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
   const prep = letterbox();
@@ -374,7 +431,7 @@ async function start(){
     if(String(e).includes("NotReadable")) log("➜ Close other apps/tabs using the camera, then Start.");
     if(String(e).includes("secure origin")) log("➜ Must be https (Vercel is https).");
     lblCam.textContent = "error";
-    stopTracksOnly(); // not destroy, so we can retry faster
+    stopLocalStream();
   } finally {
     starting = false;
   }
@@ -383,7 +440,7 @@ async function start(){
 function stop(){
   running=false;
   if(rafId) cancelAnimationFrame(rafId), rafId=null;
-  stopLocalStream();
+  withCamLock(async ()=>{ stopLocalStream(); });
   lblCam.textContent="stopped";
 }
 
