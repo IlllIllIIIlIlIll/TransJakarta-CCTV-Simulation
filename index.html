@@ -1,324 +1,88 @@
+<!-- index.html  (CrowdEase fixed mobile model load) -->
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
-  />
-  <title>CrowdEase — Person Counter (Web)</title>
-  <style>
-    :root {
-      --bg: #0b0b0c;
-      --panel: #151518;
-      --text: #e9e9ee;
-      --muted: #9aa0a6;
-      --accent: #22c55e;
-      --box: #10b981;
-      --danger: #ef4444;
-    }
-    html, body {
-      margin: 0; padding: 0; height: 100%;
-      background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
-      -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
-    }
-    .wrap {
-      max-width: 980px; margin: 0 auto; padding: 16px; display: grid; gap: 12px;
-    }
-    .card {
-      background: var(--panel); border: 1px solid #22232a; border-radius: 16px; padding: 12px;
-    }
-    .row { display: grid; gap: 12px; }
-    @media (min-width: 860px) { .row { grid-template-columns: 1fr 1fr; } }
-    .video-wrap { position: relative; width: 100%; aspect-ratio: 16/9; background:#0f1115; border-radius: 12px; overflow: hidden; }
-    video, canvas {
-      position: absolute; inset: 0; width: 100%; height: 100%;
-      object-fit: cover; border: 0;
-    }
-    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-    .toolbar > * { margin:0; }
-    select, button {
-      background: #1c1d22; color: var(--text); border: 1px solid #292a30; border-radius: 10px;
-      padding: 10px 12px; font-size: 14px;
-    }
-    button.primary { background: #1d2b1f; border-color: #214227; }
-    button.danger { background: #2b1d1d; border-color: #452222; color:#ffd7d7; }
-    .counter {
-      position: absolute; left: 12px; top: 12px;
-      background: rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12);
-      border-radius: 10px; padding: 8px 12px; font-weight: 700; backdrop-filter: blur(4px);
-    }
-    .dot {
-      display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:8px; background: #999;
-    }
-    .dot.ok { background: var(--accent); }
-    .muted { color: var(--muted); font-size: 13px; }
-    .big { font-size: 18px; }
-    .tiny { font-size: 12px; }
-    .footer { text-align:center; color:var(--muted); font-size:12px; padding: 8px 0 20px; }
-    .legend { position:absolute; right: 12px; top: 12px; background: rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.12);
-      border-radius:10px; padding:6px 10px; font-size:12px; }
-    .hidden { display:none !important; }
-  </style>
-  <!-- TF.js + COCO-SSD (browser inference) -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CrowdEase — Live Person Counter</title>
+<style>
+/* ... keep your same CSS ... */
+body{margin:0;background:#0b0b0c;color:#eee;font-family:system-ui,sans-serif}
+.video-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;overflow:hidden}
+video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.counter{position:absolute;left:12px;top:12px;background:rgba(0,0,0,.45);
+  border-radius:10px;padding:8px 12px;font-weight:700}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h2 style="margin:6px 0 12px;">👀 CrowdEase — Live Person Counter</h2>
-      <div class="toolbar">
-        <button id="btnStart" class="primary">▶️ Start</button>
-        <button id="btnStop" class="danger" disabled>⏹ Stop</button>
+<h2 style="text-align:center;">👀 CrowdEase — Live Person Counter</h2>
+<div style="text-align:center;margin:8px">
+<button id="start">Start</button>
+<button id="stop" disabled>Stop</button>
+<select id="facing"><option value="environment">Back</option><option value="user">Front</option></select>
+</div>
+<div class="video-wrap">
+  <video id="video" playsinline muted></video>
+  <canvas id="canvas"></canvas>
+  <div class="counter" id="counter">People: 0</div>
+</div>
+<pre id="log" style="max-height:200px;overflow:auto;font-size:12px;background:#111;padding:8px;border-radius:6px"></pre>
 
-        <select id="selFacing">
-          <option value="environment">Back camera</option>
-          <option value="user">Front camera</option>
-        </select>
-
-        <select id="selDevice" title="If your browser exposes device list, you can pick one here."></select>
-
-        <label class="muted tiny">
-          Threshold:
-          <input id="thresh" type="range" min="0.1" max="0.9" step="0.05" value="0.5" />
-          <span id="threshVal">0.50</span>
-        </label>
-
-        <span id="status" class="muted"><span class="dot" id="dot"></span><span id="statusText">idle</span></span>
-      </div>
-    </div>
-
-    <div class="row">
-      <div class="card video-wrap">
-        <video id="video" playsinline muted></video>
-        <canvas id="canvas"></canvas>
-        <div class="counter big" id="counter">People: 0</div>
-        <div class="legend">Model: COCO-SSD (person)</div>
-      </div>
-      <div class="card">
-        <h3 style="margin-top:6px;">Console</h3>
-        <pre id="log" class="tiny" style="white-space:pre-wrap; max-height:380px; overflow:auto; background:#0f1115; padding:10px; border-radius:8px; border:1px solid #1e2027;"></pre>
-        <div class="muted tiny">If you open DevTools → Console, you’ll see the same logs.</div>
-      </div>
-    </div>
-
-    <div class="footer">Works fully in the browser. Deploy anywhere static (Vercel). No servers, no Python, no native deps.</div>
-  </div>
-
-  <script>
-    // ======= state =======
-    let model = null;
-    let stream = null;
-    let rafId = null;
-    let running = false;
-    let selectedDeviceId = null;
-
-    const els = {
-      video: document.getElementById('video'),
-      canvas: document.getElementById('canvas'),
-      counter: document.getElementById('counter'),
-      btnStart: document.getElementById('btnStart'),
-      btnStop: document.getElementById('btnStop'),
-      selFacing: document.getElementById('selFacing'),
-      selDevice: document.getElementById('selDevice'),
-      thresh: document.getElementById('thresh'),
-      threshVal: document.getElementById('threshVal'),
-      log: document.getElementById('log'),
-      dot: document.getElementById('dot'),
-      statusText: document.getElementById('statusText'),
-    };
-
-    // ======= helpers =======
-    function log(...args) {
-      console.log(...args);
-      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
-      els.log.textContent += msg + '\n';
-      els.log.scrollTop = els.log.scrollHeight;
-    }
-    function setStatus(text, ok=false) {
-      els.statusText.textContent = text;
-      els.dot.classList.toggle('ok', ok);
-    }
-    function drawFrame(preds, threshold) {
-      const ctx = els.canvas.getContext('2d');
-      const { videoWidth: w, videoHeight: h } = els.video;
-      if (!w || !h) return;
-      els.canvas.width = w; els.canvas.height = h;
-      ctx.clearRect(0,0,w,h);
-
-      let count = 0;
-      for (const p of preds) {
-        if (p.class === 'person' || p.class === 'Person' || p.class === 0 || p.class === '0' || p.class === 'person') {
-          if ((p.score ?? p.score ?? 0) >= threshold) count++;
-        }
-      }
-
-      // draw boxes for "person" only
-      ctx.lineWidth = 3;
-      ctx.font = '16px ui-sans-serif, system-ui, -apple-system';
-      for (const p of preds) {
-        if ((p.class === 'person' || p.class === 'Person' || p.class === 0 || p.class === '0') &&
-            ((p.score ?? p.score ?? 0) >= threshold)) {
-          const [x, y, width, height] = p.bbox; // coco-ssd gives [x,y,w,h]
-          ctx.strokeStyle = '#10b981';
-          ctx.fillStyle = 'rgba(16,185,129,0.15)';
-          ctx.fillRect(x, y, width, height);
-          ctx.strokeRect(x, y, width, height);
-
-          ctx.fillStyle = '#e9e9ee';
-          ctx.fillText(`${(p.score*100).toFixed(0)}%`, x+6, Math.max(18, y-6));
-        }
-      }
-
-      els.counter.textContent = `People: ${count}`;
-      return count;
-    }
-
-    async function listCameras() {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const vids = devices.filter(d => d.kind === 'videoinput');
-        els.selDevice.innerHTML = '';
-        const optAny = document.createElement('option');
-        optAny.value = '';
-        optAny.textContent = vids.length ? 'Auto (by facing)' : 'No cameras found';
-        els.selDevice.appendChild(optAny);
-
-        for (const d of vids) {
-          const opt = document.createElement('option');
-          opt.value = d.deviceId;
-          opt.textContent = d.label || `Camera ${els.selDevice.length}`;
-          els.selDevice.appendChild(opt);
-        }
-      } catch (e) {
-        log('[WARN] enumerateDevices failed (likely no prior permission):', e);
-      }
-    }
-
-    async function startStream() {
-      const facingMode = els.selFacing.value; // 'user' or 'environment'
-      const deviceId = els.selDevice.value || null;
-      const constraints = deviceId
-        ? { audio:false, video: { deviceId: { exact: deviceId }, width:{ideal:1280}, height:{ideal:720} } }
-        : { audio:false, video: { facingMode, width:{ideal:1280}, height:{ideal:720} } };
-
-      log('[INFO] requesting camera…', constraints);
-
-      if (stream) stopStream();
-
-      stream = await navigator.mediaDevices.getUserMedia(constraints);
-      els.video.srcObject = stream;
-      await els.video.play();
-      await new Promise(r => setTimeout(r, 60)); // settle layout
-
-      await listCameras(); // now labels are available
-
-      setStatus('camera OK', true);
-      log('[INFO] camera started. size:', els.video.videoWidth, 'x', els.video.videoHeight);
-    }
-
-    function stopStream() {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        stream = null;
-        log('[INFO] camera stopped');
-      }
-    }
-
-    async function ensureModel() {
-      if (model) return model;
-      setStatus('loading model…');
-      log('[INFO] loading COCO-SSD model…');
-      await tf.setBackend('webgl'); // fastest on phones/desktops
-      await tf.ready();
-      model = await cocoSsd.load({ base: 'lite_mobilenet_v2' }); // lightweight, fast
-      log('[INFO] model loaded!');
-      setStatus('model OK', true);
-      return model;
-    }
-
-    async function loop() {
-      if (!running) return;
-      const threshold = Number(els.thresh.value);
-      const m = await ensureModel();
-      if (els.video.readyState >= 2) {
-        // detect on the current video frame
-        const preds = await m.detect(els.video); // [{bbox:[x,y,w,h], class, score}, …]
-        const ppl = preds.filter(p => p.class === 'person' && p.score >= threshold).length;
-        drawFrame(preds, threshold);
-        // periodic console proof
-        if (Math.random() < 0.15) {
-          log('[RESULT] People detected:', ppl, 'threshold:', threshold.toFixed(2), 'fps≈', (1/(perfDelta()+1e-6)).toFixed(1));
-        }
-      }
-      rafId = requestAnimationFrame(loop);
-    }
-
-    let _lastPerf = performance.now();
-    function perfDelta() {
-      const now = performance.now();
-      const d = (now - _lastPerf) / 1000;
-      _lastPerf = now;
-      return d;
-    }
-
-    // ======= UI wiring =======
-    els.thresh.addEventListener('input', () => {
-      els.threshVal.textContent = Number(els.thresh.value).toFixed(2);
-    });
-
-    els.btnStart.addEventListener('click', async () => {
-      try {
-        els.btnStart.disabled = true;
-        els.btnStop.disabled = false;
-        setStatus('starting…');
-        log('[INFO] Start clicked (mobile requires user gesture).');
-        await startStream();
-        await ensureModel();
-        running = true;
-        _lastPerf = performance.now();
-        loop();
-        log('[INFO] streaming + inference running. you should see boxes and the counter increasing.');
-      } catch (e) {
-        setStatus('error');
-        els.btnStart.disabled = false;
-        els.btnStop.disabled = true;
-        log('[ERROR] start failed:', e);
-        alert('Failed to start camera or model. See logs.');
-      }
-    });
-
-    els.btnStop.addEventListener('click', () => {
-      running = false;
-      if (rafId) cancelAnimationFrame(rafId);
-      stopStream();
-      setStatus('idle');
-      els.btnStart.disabled = false;
-      els.btnStop.disabled = true;
-      log('[INFO] stopped.');
-    });
-
-    els.selFacing.addEventListener('change', async () => {
-      if (!running) return;
-      await startStream(); // switch cam by facing
-    });
-
-    els.selDevice.addEventListener('change', async () => {
-      if (!running) return;
-      await startStream(); // switch cam by deviceId
-    });
-
-    // Permissions hint & device list
-    (async () => {
-      log('[BOOT] TF.js:', tf.version_core, 'COCO-SSD ready:', !!window.cocoSsd);
-      if (!navigator.mediaDevices?.getUserMedia) {
-        log('[ERROR] getUserMedia not supported in this browser.');
-        alert('getUserMedia is not supported.');
-      }
-      // Try to populate devices early (labels empty until permission)
-      await listCameras();
-    })();
-  </script>
+<script>
+const logBox=document.getElementById('log');
+const log=(...a)=>{console.log(...a);logBox.textContent+=a.join(' ')+'\n';logBox.scrollTop=logBox.scrollHeight;}
+let model=null,stream=null,looping=false;
+async function initBackend(){
+  const backends=["webgl","wasm","cpu"];
+  for(const b of backends){
+    try{
+      await tf.setBackend(b);await tf.ready();
+      log("[OK] backend:",b);
+      return b;
+    }catch(e){log("[WARN] backend",b,"failed:",e.message);}
+  }
+  throw new Error("No backend available");
+}
+async function loadModel(){
+  if(model)return model;
+  const backend=await initBackend();
+  log("[INFO] loading COCO-SSD on",backend);
+  model=await cocoSsd.load({base:'lite_mobilenet_v2'});
+  log("[OK] model loaded!");
+  return model;
+}
+async function startCam(){
+  const facing=document.getElementById('facing').value;
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:1280},height:{ideal:720}},audio:false});
+  const v=document.getElementById('video');
+  v.srcObject=stream;await v.play();
+  log("[INFO] camera started",v.videoWidth,"x",v.videoHeight);
+}
+function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
+async function loop(){
+  if(!looping)return;
+  const v=document.getElementById('video'),c=document.getElementById('canvas');
+  const ctx=c.getContext('2d');c.width=v.videoWidth;c.height=v.videoHeight;
+  const preds=await model.detect(v);
+  let cnt=0;
+  for(const p of preds){if(p.class==="person"&&p.score>0.4)cnt++;
+    if(p.class==="person"&&p.score>0.4){const[x,y,w,h]=p.bbox;ctx.strokeStyle="#0f0";ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);}
+  }
+  document.getElementById('counter').textContent="People: "+cnt;
+  requestAnimationFrame(loop);
+}
+document.getElementById('start').onclick=async()=>{
+  try{
+    document.getElementById('start').disabled=true;
+    document.getElementById('stop').disabled=false;
+    await startCam();
+    await loadModel();
+    looping=true;loop();
+  }catch(e){log("[ERROR]",e);}
+};
+document.getElementById('stop').onclick=()=>{looping=false;stopCam();document.getElementById('start').disabled=false;document.getElementById('stop').disabled=true;log("[INFO] stopped");};
+</script>
 </body>
 </html>
