@@ -140,6 +140,8 @@ function detectLayoutAndSize(meta){
 }
 
 async function loadModel(url){
+  // Resolve default URL when called without argument (e.g., from start())
+  url = (url || txtModel.value?.trim() || modelUrl || '/models/yolov8n.onnx');
   lblModel.textContent = "loading…";
   const bin = await fetchBinary(url);
   const eps = pickEP();
@@ -154,6 +156,7 @@ async function loadModel(url){
   off.width = off.height = S;
 
   modelLoaded = true;
+  modelUrl = url; // persist resolved URL
   lblModel.textContent = url.split('/').pop();
   lblEP.textContent = eps[0];
   lblIn.textContent = `${inputLayout} ${S}×${S}×${C}`;
