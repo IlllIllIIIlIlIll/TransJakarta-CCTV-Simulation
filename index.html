@@ -1,88 +1,545 @@
-<!-- index.html  (CrowdEase fixed mobile model load) -->
 <!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <title>CrowdEase — Live Person Counter</title>
 <style>
-/* ... keep your same CSS ... */
-body{margin:0;background:#0b0b0c;color:#eee;font-family:system-ui,sans-serif}
-.video-wrap{position:relative;width:100%;aspect-ratio:16/9;background:#000;overflow:hidden}
-video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-.counter{position:absolute;left:12px;top:12px;background:rgba(0,0,0,.45);
-  border-radius:10px;padding:8px 12px;font-weight:700}
+  :root{--bg:#0b0c10;--fg:#eaf0f6;--mut:#99a3ad;--acc:#27c4a0}
+  html,body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  .wrap{max-width:900px;margin:auto;padding:16px}
+  h1{font-size:1.1rem;margin:0 0 12px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+  .sp{flex:1}
+  button{border:none;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
+  .go{background:var(--acc);color:#003}.stop{background:#333;color:var(--fg)}
+  .sel,.num,.text{background:#111;color:var(--fg);border:1px solid #222;border-radius:10px;padding:8px}
+  .badge{font-size:.9rem;color:var(--mut)}
+  .status{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:8px 0 12px}
+  .stat{padding:6px 10px;border-radius:10px;background:#101317;border:1px solid #1b2129}
+  canvas{width:100%;height:auto;border-radius:12px;background:#000}
+  .log{margin-top:10px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;background:#0f1216;color:#cfe6ff;border:1px solid #1b2129;padding:8px;border-radius:10px;max-height:28vh;overflow:auto}
+  .mini{font-size:.85rem}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
 </head>
 <body>
-<h2 style="text-align:center;">👀 CrowdEase — Live Person Counter</h2>
-<div style="text-align:center;margin:8px">
-<button id="start">Start</button>
-<button id="stop" disabled>Stop</button>
-<select id="facing"><option value="environment">Back</option><option value="user">Front</option></select>
+<div class="wrap">
+  <h1>👀 CrowdEase — Live Person Counter</h1>
+
+  <div class="toolbar">
+    <button id="btnStart" class="go">▶️ Start</button>
+    <button id="btnStop"  class="stop">⏹️ Stop</button>
+    <span class="sp"></span>
+
+    <label class="badge">Facing</label>
+    <select id="selFacing" class="sel">
+      <option value="auto" selected>Auto</option>
+      <option value="user">Front</option>
+      <option value="environment">Back</option>
+    </select>
+
+    <label class="badge">Camera</label>
+    <select id="selCam" class="sel"></select>
+
+    <label class="badge">Thresh</label>
+    <input id="numConf" class="num" type="number" min="0" max="1" step="0.01" value="0.35" style="width:90px"/>
+
+    <label class="badge">Class</label>
+    <select id="selClass" class="sel">
+      <option value="person" selected>person</option>
+      <option value="*">max class</option>
+    </select>
+  </div>
+
+  <div class="toolbar mini">
+    <label class="badge">Model URL</label>
+    <input id="txtModel" class="text" style="min-width:260px" placeholder="/models/yolov8n.onnx"/>
+    <button id="btnLoad" class="stop">Load model</button>
+  </div>
+
+  <div class="status mini">
+    <div class="stat">Status: <span id="lblCam" class="badge">idle</span></div>
+    <div class="stat">People: <strong id="lblCount">0</strong></div>
+    <div class="stat">EP: <span id="lblEP" class="badge">-</span></div>
+    <div class="stat">Input: <span id="lblIn" class="badge">-</span></div>
+    <div class="stat">Output: <span id="lblOut" class="badge">-</span></div>
+    <div class="stat">Model: <span id="lblModel" class="badge">none</span></div>
+  </div>
+
+  <canvas id="canvas" width="640" height="480"></canvas>
+  <div id="log" class="log"></div>
 </div>
-<div class="video-wrap">
-  <video id="video" playsinline muted></video>
-  <canvas id="canvas"></canvas>
-  <div class="counter" id="counter">People: 0</div>
-</div>
-<pre id="log" style="max-height:200px;overflow:auto;font-size:12px;background:#111;padding:8px;border-radius:6px"></pre>
 
 <script>
-const logBox=document.getElementById('log');
-const log=(...a)=>{console.log(...a);logBox.textContent+=a.join(' ')+'\n';logBox.scrollTop=logBox.scrollHeight;}
-let model=null,stream=null,looping=false;
-async function initBackend(){
-  const backends=["webgl","wasm","cpu"];
-  for(const b of backends){
-    try{
-      await tf.setBackend(b);await tf.ready();
-      log("[OK] backend:",b);
-      return b;
-    }catch(e){log("[WARN] backend",b,"failed:",e.message);}
+/* ------- UTIL ------- */
+const qs = new URLSearchParams(location.search);
+const logEl = document.getElementById('log');
+const log = (...a)=>{ const s=a.join(' '); console.log(s); logEl.textContent += s + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
+
+// Configure ORT WASM path explicitly and provide debugging
+const ORT_VERSION = '1.19.2';
+function dumpError(err){
+  try{ log('[DEBUG] err.name:', err?.name); }catch(_){}
+  try{ log('[DEBUG] err.message:', err?.message); }catch(_){}
+  try{ log('[DEBUG] err.stack:', err?.stack); }catch(_){}
+}
+try{
+  if (window.ort && ort.env && ort.env.wasm){
+    ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+    log('[DEBUG] ORT wasmPaths =', ort.env.wasm.wasmPaths);
   }
-  throw new Error("No backend available");
+}catch(e){ log('[DEBUG] setting wasmPaths failed:', e?.message||e); }
+
+/* ------- UI ------- */
+const btnStart  = document.getElementById('btnStart');
+const btnStop   = document.getElementById('btnStop');
+const btnLoad   = document.getElementById('btnLoad');
+const selFacing = document.getElementById('selFacing');
+const selCam    = document.getElementById('selCam');
+const selClass  = document.getElementById('selClass');
+const numConf   = document.getElementById('numConf');
+const lblCam    = document.getElementById('lblCam');
+const lblCount  = document.getElementById('lblCount');
+const lblModel  = document.getElementById('lblModel');
+const lblEP     = document.getElementById('lblEP');
+const lblIn     = document.getElementById('lblIn');
+const lblOut    = document.getElementById('lblOut');
+const canvas    = document.getElementById('canvas');
+const ctx       = canvas.getContext('2d', { willReadFrequently:true });
+
+/* ------- STATE ------- */
+let stream=null, video=null, rafId=null, running=false;
+let session=null, modelLoaded=false, inputName=null, outputName=null;
+let inputLayout='NCHW', S=640, C=3;           // detected
+let CLASS_PERSON=0;                            // COCO default
+let modelUrl = qs.get('model') || '/models/yolov8n.onnx';
+
+const txtModel = document.getElementById('txtModel');
+txtModel.value = modelUrl;
+
+// offscreen for letterbox
+const off = document.createElement('canvas');
+const offCtx = off.getContext('2d', { willReadFrequently:true });
+
+/* ------- MODEL LOADING ------- */
+async function fetchBinary(url){
+  log("[INFO] GET", url);
+  const r = await fetch(url, { cache:'no-cache' });
+  if(!r.ok) throw new Error(`HTTP ${r.status}`);
+  const buf = await r.arrayBuffer();
+  if(buf.byteLength < 1024) throw new Error(`Tiny response ${buf.byteLength}`);
+  return buf;
 }
-async function loadModel(){
-  if(model)return model;
-  const backend=await initBackend();
-  log("[INFO] loading COCO-SSD on",backend);
-  model=await cocoSsd.load({base:'lite_mobilenet_v2'});
-  log("[OK] model loaded!");
-  return model;
+
+function pickEP(){
+  const eps = [];
+  if ('gpu' in navigator) eps.push('webgpu');
+  eps.push('wasm');
+  return eps;
 }
-async function startCam(){
-  const facing=document.getElementById('facing').value;
-  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:facing,width:{ideal:1280},height:{ideal:720}},audio:false});
-  const v=document.getElementById('video');
-  v.srcObject=stream;await v.play();
-  log("[INFO] camera started",v.videoWidth,"x",v.videoHeight);
-}
-function stopCam(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}}
-async function loop(){
-  if(!looping)return;
-  const v=document.getElementById('video'),c=document.getElementById('canvas');
-  const ctx=c.getContext('2d');c.width=v.videoWidth;c.height=v.videoHeight;
-  const preds=await model.detect(v);
-  let cnt=0;
-  for(const p of preds){if(p.class==="person"&&p.score>0.4)cnt++;
-    if(p.class==="person"&&p.score>0.4){const[x,y,w,h]=p.bbox;ctx.strokeStyle="#0f0";ctx.lineWidth=2;ctx.strokeRect(x,y,w,h);}
+
+function detectLayoutAndSize(meta){
+  // meta.dimensions example: [1,3,640,640] or [1,640,640,3] or [-1,3,640,640]
+  const dims = meta.dimensions.map(d => (typeof d === 'number' ? d : NaN));
+  // Try to infer by channel position
+  if (dims.length === 4) {
+    if (dims[1] === 3 || (isNaN(dims[1]) && dims[3] !== 3)) { inputLayout = 'NCHW'; C=3; S = dims[2] || dims[3] || 640; }
+    else if (dims[3] === 3) { inputLayout = 'NHWC'; C=3; S = dims[1] || dims[2] || 640; }
+    else { inputLayout = 'NCHW'; C=3; S=640; } // fallback
+  } else {
+    inputLayout = 'NCHW'; C=3; S=640;
   }
-  document.getElementById('counter').textContent="People: "+cnt;
-  requestAnimationFrame(loop);
 }
-document.getElementById('start').onclick=async()=>{
+
+async function loadModel(url){
+  // Resolve default URL when called without argument (e.g., from start())
+  url = (url || txtModel.value?.trim() || modelUrl || '/models/yolov8n.onnx');
+  lblModel.textContent = "loading…";
+  const bin = await fetchBinary(url);
+  const eps = pickEP();
+  const opts = { executionProviders: eps, graphOptimizationLevel:'all' };
+  let created=false;
   try{
-    document.getElementById('start').disabled=true;
-    document.getElementById('stop').disabled=false;
-    await startCam();
-    await loadModel();
-    looping=true;loop();
-  }catch(e){log("[ERROR]",e);}
-};
-document.getElementById('stop').onclick=()=>{looping=false;stopCam();document.getElementById('start').disabled=false;document.getElementById('stop').disabled=true;log("[INFO] stopped");};
+    session = await ort.InferenceSession.create(bin, opts);
+    created=true;
+  }catch(err){
+    log('[ERROR] session create failed with opts=', JSON.stringify(opts));
+    dumpError(err);
+  }
+  if(!created){
+    try{
+      session = await ort.InferenceSession.create(bin, { executionProviders:['wasm'], graphOptimizationLevel:'all' });
+      log('[INFO] session created with wasm-only fallback');
+    }catch(err2){
+      log('[ERROR] session create failed (wasm-only)');
+      dumpError(err2);
+      throw err2;
+    }
+  }
+  inputName  = session.inputNames[0];
+  outputName = session.outputNames[0];
+
+  // detect input
+  log('[DEBUG] inputNames:', JSON.stringify(session.inputNames||[]));
+  log('[DEBUG] outputNames:', JSON.stringify(session.outputNames||[]));
+  try{ log('[DEBUG] inputMetadata keys:', JSON.stringify(Object.keys(session.inputMetadata||{}))); }catch(_){}
+  const meta = session.inputMetadata?.[inputName];
+  if (!meta || !meta.dimensions){
+    log('[WARN] input metadata missing; using defaults NCHW 1x3x640x640');
+    inputLayout='NCHW'; C=3; S=640;
+  } else {
+    detectLayoutAndSize(meta);
+  }
+  off.width = off.height = S;
+  log('[DEBUG] resolved input layout:', inputLayout, 'S=', S, 'C=', C);
+
+  modelLoaded = true;
+  modelUrl = url; // persist resolved URL
+  lblModel.textContent = url.split('/').pop();
+  lblEP.textContent = eps[0];
+  lblIn.textContent = `${inputLayout} ${S}×${S}×${C}`;
+  lblOut.textContent = (session.outputMetadata[outputName]?.dimensions||[]).join('×') || '-';
+  log("[INFO] model ready:", url, `EP=${eps[0]}`, `input=${lblIn.textContent}`, `output=${lblOut.textContent}`);
+}
+
+/* ------- CAMERA ------- */
+// persistent hidden video element to avoid null races during retries/switches
+video = document.createElement('video');
+video.setAttribute('playsinline','');
+video.muted = true;
+
+// serialize all camera start/stop/open operations to prevent races
+let camLock = Promise.resolve();
+let openSeq = 0; // invalidate stale opens
+function withCamLock(cb){
+  const run = camLock.then(()=>cb());
+  // ensure the chain continues even if this run throws
+  camLock = run.catch(()=>{});
+  return run;
+}
+
+function stopLocalStream(){
+  if(stream){
+    try { stream.getTracks().forEach(t=>t.stop()); } catch(_){}
+    stream=null;
+  }
+  if(video){
+    try { video.srcObject=null; } catch(_){}
+  }
+}
+
+async function waitForVideoReady(timeoutMs=2500){
+  const t0 = performance.now();
+  while (performance.now()-t0 < timeoutMs){
+    if (video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) return;
+    await new Promise(r=>setTimeout(r,50));
+  }
+  if (!video || video.videoWidth===0) throw new Error('Video dimensions unavailable');
+}
+
+function buildConstraintAttempts(){
+  const attempts = [];
+  const deviceId = selCam.value || null;
+  const facing = selFacing.value; // auto|user|environment
+
+  // Prefer explicit device if chosen
+  if (deviceId){
+    attempts.push({ video:{ deviceId:{ exact:deviceId }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  }
+
+  // Facing preferences
+  if (facing === 'user' || facing === 'environment'){
+    attempts.push({ video:{ facingMode:{ exact:facing }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    attempts.push({ video:{ facingMode:{ ideal:facing }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  } else {
+    attempts.push({ video:{ facingMode:{ ideal:'environment' }, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  }
+
+  // Generic preferences
+  attempts.push({ video:{ width:{ideal:1280}, height:{ideal:720} }, audio:false });
+  // Last resort
+  attempts.push({ video:true, audio:false });
+
+  return attempts;
+}
+async function listCameras(){
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const cams = devs.filter(d=>d.kind==='videoinput');
+  selCam.innerHTML = "";
+  cams.forEach((c,i)=>{
+    const o=document.createElement('option');
+    o.value=c.deviceId; o.textContent=c.label||`camera ${i+1}`;
+    selCam.appendChild(o);
+  });
+  return cams;
+}
+async function openCameraOnce(){
+  const seq = ++openSeq;
+  // ensure previous tracks are fully stopped before opening a new one
+  stopLocalStream();
+
+  const attempts = buildConstraintAttempts();
+  let lastErr=null;
+  for(const c of attempts){
+    try{
+      const s = await navigator.mediaDevices.getUserMedia(c);
+      if (seq !== openSeq){ // stale open due to a newer request
+        try { s.getTracks().forEach(t=>t.stop()); } catch(_){}
+        throw new Error('stale-open');
+      }
+      stream = s;
+      video.srcObject = stream;
+      await video.play();
+      await waitForVideoReady(2500);
+      return;
+    }catch(e){
+      lastErr = e;
+      log("[WARN] getUserMedia failed:", e.name||e.message||e);
+      // Give hardware a brief breather between attempts
+      await new Promise(r=>setTimeout(r,150));
+    }
+  }
+  throw lastErr || new Error("Could not start video source");
+}
+async function openCamera(){
+  await withCamLock(async ()=>{
+    await openCameraOnce();
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    lblCam.textContent = `camera @ ${canvas.width}×${canvas.height}`;
+    await listCameras().catch(()=>{});
+  });
+}
+
+/* ------- PREP ------- */
+function letterbox(){
+  const srcW = video.videoWidth, srcH = video.videoHeight;
+  const scale = Math.min(S/srcW, S/srcH);
+  const newW = Math.round(srcW*scale), newH = Math.round(srcH*scale);
+  const padX = Math.floor((S-newW)/2);
+  const padY = Math.floor((S-newH)/2);
+
+  offCtx.fillStyle = "#000"; offCtx.fillRect(0,0,S,S);
+  offCtx.drawImage(video, 0,0,srcW,srcH, padX,padY,newW,newH);
+  return { scale, padX, padY, srcW, srcH };
+}
+
+function buildInputTensor(){
+  const img = offCtx.getImageData(0,0,S,S).data;
+  const N = S*S;
+  if (inputLayout === 'NCHW') {
+    const chw = new Float32Array(3*N);
+    for(let i=0,j=0;i<N;i++,j+=4){
+      chw[i]      = img[j]   /255;
+      chw[i+N]    = img[j+1] /255;
+      chw[i+2*N]  = img[j+2] /255;
+    }
+    return new ort.Tensor('float32', chw, [1,3,S,S]);
+  } else { // NHWC
+    const nhwc = new Float32Array(3*N);
+    for(let i=0,j=0;i<N;i++,j+=4){
+      nhwc[3*i]   = img[j]   /255;
+      nhwc[3*i+1] = img[j+1] /255;
+      nhwc[3*i+2] = img[j+2] /255;
+    }
+    return new ort.Tensor('float32', nhwc, [1,S,S,3]);
+  }
+}
+
+/* ------- YOLO DECODE ------- */
+function sigmoid(x){return 1/(1+Math.exp(-x))}
+function iou(a,b){const x1=Math.max(a[0],b[0]),y1=Math.max(a[1],b[1]),x2=Math.min(a[2],b[2]),y2=Math.min(a[3],b[3]);const w=Math.max(0,x2-x1),h=Math.max(0,y2-y1);const inter=w*h;const A=(a[2]-a[0])*(a[3]-a[1]);const B=(b[2]-b[0])*(b[3]-b[1]);return inter/(A+B-inter+1e-6)}
+function nms(boxes,scores,iouTh=0.45,topK=300){
+  const order = scores.map((s,i)=>[s,i]).sort((a,b)=>b[0]-a[0]).map(x=>x[1]);
+  const keep=[]; for(const i of order){ const bi=boxes[i]; let ok=true;
+    for(const j of keep){ if(iou(bi,boxes[j])>iouTh){ ok=false; break; } }
+    if(ok){ keep.push(i); if(keep.length>=topK) break; }
+  }
+  return keep;
+}
+
+/* handle two common layouts:
+   A) [N, stride] where stride in {84,85,86}
+   B) [stride, N]
+   Where (x,y,w,h + (obj?) + classes...)
+*/
+function decode(raw, dims, confTh, wantClass){
+  let Ndet, stride, rowMajor=true;
+  if (dims.length===2){
+    if ([84,85,86].includes(dims[1])){ Ndet=dims[0]; stride=dims[1]; rowMajor=true; }
+    else if ([84,85,86].includes(dims[0])){ Ndet=dims[1]; stride=dims[0]; rowMajor=false; }
+    else { // flat fallback
+      stride=84; Ndet=raw.length/stride; rowMajor=true;
+    }
+  } else if (dims.length===3){
+    // e.g. [1,84,8400] or [1,8400,84]
+    if ([84,85,86].includes(dims[1])){ Ndet=dims[2]; stride=dims[1]; rowMajor=false; }
+    else if ([84,85,86].includes(dims[2])){ Ndet=dims[1]; stride=dims[2]; rowMajor=true; }
+    else { stride=84; Ndet=raw.length/stride; rowMajor=true; }
+  } else {
+    stride=84; Ndet=raw.length/stride; rowMajor=true;
+  }
+
+  const xywhOff=0, clsOff = (stride===86?6:(stride===85?5:4)); // supports extra objectness
+  // Heuristic: detect if coords are normalized (0..1) vs pixels (~S)
+  let normalized=false;
+  {
+    const sampleN = Math.min(Ndet, 20);
+    let maxAbs=0;
+    for(let i=0;i<sampleN;i++){
+      const base = rowMajor ? i*stride : i;
+      const get = k => rowMajor ? raw[base+k] : raw[k*Ndet + i];
+      const x = Math.abs(get(0));
+      const y = Math.abs(get(1));
+      const w = Math.abs(get(2));
+      const h = Math.abs(get(3));
+      maxAbs = Math.max(maxAbs, x, y, w, h);
+    }
+    normalized = maxAbs <= 1.5; // values ~0..1
+    if (normalized) log('[DEBUG] decode: treating coords as normalized (0..1)');
+  }
+  const boxes=[], scores=[];
+  for(let i=0;i<Ndet;i++){
+    const base = rowMajor ? i*stride : i;
+    const get = k => rowMajor ? raw[base+k] : raw[k*Ndet + i];
+
+    let x = get(0), y=get(1), w=get(2), h=get(3);
+    if (normalized){ x*=S; y*=S; w*=S; h*=S; }
+    const x1=x-w/2, y1=y-h/2, x2=x+w/2, y2=y+h/2;
+
+    // Objectness if present
+    const obj = (clsOff>4) ? sigmoid(get(clsOff-1)) : 1;
+    let prob=0;
+    if (wantClass === '*'){
+      // max over classes
+      let best=-1, bestv=-1e9;
+      for(let c=0;c<stride-clsOff;c++){ const v=obj * sigmoid(get(clsOff+c)); if(v>bestv){bestv=v; best=c;} }
+      prob=bestv;
+    } else {
+      prob = obj * sigmoid(get(clsOff + CLASS_PERSON));
+    }
+    // Sanity filters to drop degenerate boxes
+    if (prob>=confTh && isFinite(x1) && isFinite(y1) && isFinite(x2) && isFinite(y2)){
+      const bw = x2-x1, bh = y2-y1;
+      if (bw>1 && bh>1 && bw<=S*1.5 && bh<=S*1.5){
+        boxes.push([x1,y1,x2,y2]); scores.push(prob);
+      }
+    }
+  }
+  const keep = nms(boxes,scores,0.45,300);
+  return keep.map(i=>({box:boxes[i], score:scores[i]}));
+}
+
+/* ------- LOOP ------- */
+async function loop(){
+  if(!running) return;
+  const t0 = performance.now();
+
+  // skip frame if video not ready to avoid width=0 races
+  if (!video || video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0){
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
+
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+  const prep = letterbox();
+  const input = buildInputTensor();
+  const feeds = {}; feeds[inputName] = input;
+
+  let out;
+  try{
+    out = await session.run(feeds);
+  }catch(err){
+    log('[ERROR] session.run failed');
+    dumpError(err);
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
+  const outTensor = out[outputName] ?? out[Object.keys(out)[0]];
+  if (!outTensor){
+    log('[ERROR] output tensor missing. keys=', JSON.stringify(Object.keys(out||{})), 'expected=', outputName);
+    rafId = requestAnimationFrame(loop);
+    return;
+  }
+  const raw = outTensor.data;
+  const dims = outTensor.dims || (session.outputMetadata[outputName]?.dimensions) || [];
+
+  const confTh = clamp(Number(numConf.value)||0.35, 0, 1);
+  const wantClass = selClass.value; // 'person' or '*'
+  const dets = decode(raw, dims, confTh, wantClass).map(d=>{
+    let [x1,y1,x2,y2] = d.box;
+    x1=(x1-prep.padX)/prep.scale; y1=(y1-prep.padY)/prep.scale;
+    x2=(x2-prep.padX)/prep.scale; y2=(y2-prep.padY)/prep.scale;
+    x1=clamp(x1,0,prep.srcW); y1=clamp(y1,0,prep.srcH);
+    x2=clamp(x2,0,prep.srcW); y2=clamp(y2,0,prep.srcH);
+    return { box:[x1,y1,x2,y2], score:d.score };
+  });
+
+  // draw boxes
+  ctx.lineWidth=2; ctx.strokeStyle="#39f773"; ctx.fillStyle="rgba(0,0,0,.35)"; ctx.font="14px ui-monospace";
+  dets.forEach(d=>{
+    const [x1,y1,x2,y2]=d.box; const w=x2-x1, h=y2-y1;
+    ctx.fillRect(x1,y1, w, 22);
+    ctx.strokeRect(x1,y1, w, h);
+    ctx.fillStyle="#fff"; ctx.fillText(d.score.toFixed(2), x1+6, y1+16);
+    ctx.fillStyle="rgba(0,0,0,.35)";
+  });
+  lblCount.textContent = String(dets.length);
+
+  const dt = performance.now() - t0;
+  if ((dt|0)>50) log(`[INFO] frame ${dt.toFixed(1)} ms`);
+  rafId = requestAnimationFrame(loop);
+}
+
+/* ------- LIFECYCLE ------- */
+let starting = false;
+async function start(){
+  if (starting || running) return;
+  starting = true;
+  try {
+    lblCount.textContent = "0";
+    lblCam.textContent = "starting…";
+    if(!modelLoaded) await loadModel(); // your existing loader
+    await openCamera();
+    running = true;
+    loop();
+    lblCam.textContent = "running";
+  } catch (e) {
+    log("[ERROR] start failed:", e.message || e);
+    if(String(e).includes("NotAllowed")) log("➜ Allow camera permission then Start again.");
+    if(String(e).includes("NotReadable")) log("➜ Close other apps/tabs using the camera, then Start.");
+    if(String(e).includes("secure origin")) log("➜ Must be https (Vercel is https).");
+    lblCam.textContent = "error";
+    stopLocalStream();
+  } finally {
+    starting = false;
+  }
+}
+
+function stop(){
+  running=false;
+  if(rafId) cancelAnimationFrame(rafId), rafId=null;
+  withCamLock(async ()=>{ stopLocalStream(); });
+  lblCam.textContent="stopped";
+}
+
+/* ------- EVENTS ------- */
+btnStart.addEventListener('click', start);
+btnStop .addEventListener('click', stop);
+btnLoad.addEventListener('click', async ()=>{
+  try{
+    modelUrl = txtModel.value.trim() || '/models/yolov8n.onnx';
+    await loadModel(modelUrl);
+  }catch(e){ log("[ERROR] load model:", e.message||e); }
+});
+selFacing.addEventListener('change', async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
+selCam   .addEventListener('change',   async ()=>{ if(!stream) return; try{ await openCamera(); }catch(e){ log("[WARN] reopen failed:", e.message||e);} });
+
+navigator.mediaDevices?.enumerateDevices?.().then(()=>listCameras()).catch(()=>{});
+log("[INFO] App ready. Choose model or click Start.");
 </script>
 </body>
 </html>
